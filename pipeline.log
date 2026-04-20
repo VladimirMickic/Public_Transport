@@ -59,3 +59,516 @@
 /bin/bash: /Users/hugorabbit/Public Transport/run_pipeline.sh: No such file or directory
 /bin/bash: /Users/hugorabbit/Public Transport/run_pipeline.sh: No such file or directory
 /bin/bash: /Users/hugorabbit/Public Transport/run_pipeline.sh: No such file or directory
+/bin/bash: /Users/hugorabbit/Public Transport/run_pipeline.sh: No such file or directory
+/bin/bash: /Users/hugorabbit/Public Transport/run_pipeline.sh: No such file or directory
+/bin/bash: /Users/hugorabbit/Public Transport/run_pipeline.sh: No such file or directory
+--- Mon Apr 20 10:15:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:15:00,983 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:15:01,342 [INFO] Loaded 32 route names
+2026-04-20 10:15:01,344 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:15:01,541 [INFO] Received 26 vehicles
+2026-04-20 10:15:01,544 [INFO] Mapped 26 vehicles to bronze rows
+2026-04-20 10:15:02,772 [INFO] Inserted 26 rows into bronze_vehicle_pings
+2026-04-20 10:15:02,928 [INFO] Processing bronze pings since 2026-04-19T14:15:02.928112+00:00
+2026-04-20 10:15:03,159 [INFO] Read 98 qualifying bronze rows
+2026-04-20 10:15:03,188 [INFO] Cleared existing silver rows since 2026-04-19T14:15:02.928112+00:00
+2026-04-20 10:15:05,612 [INFO] Inserted 98 rows into silver_arrivals
+2026-04-20 10:15:05,655 [INFO]   on_time: 72
+2026-04-20 10:15:05,655 [INFO]   early: 16
+2026-04-20 10:15:05,655 [INFO]   late: 5
+2026-04-20 10:15:05,655 [INFO]   very_late: 5
+2026-04-20 10:15:05,789 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:15:06,048 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:15:06,088 [INFO] Top routes by reliability_score:
+2026-04-20 10:15:06,088 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   Asbury                         on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   Frontier                       on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   Tacoma                         on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:15:06,088 [INFO]   E 26th Street                  on_time=100.0%  score=100.0
+--- Mon Apr 20 10:20:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:20:01,246 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:20:01,529 [INFO] Loaded 32 route names
+2026-04-20 10:20:01,531 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:20:01,755 [INFO] Received 26 vehicles
+2026-04-20 10:20:01,758 [INFO] Mapped 26 vehicles to bronze rows
+2026-04-20 10:20:02,877 [INFO] Inserted 26 rows into bronze_vehicle_pings
+2026-04-20 10:20:03,233 [INFO] Processing bronze pings since 2026-04-19T14:20:03.232605+00:00
+2026-04-20 10:20:03,541 [INFO] Read 124 qualifying bronze rows
+2026-04-20 10:20:03,577 [INFO] Cleared existing silver rows since 2026-04-19T14:20:03.232605+00:00
+2026-04-20 10:20:06,749 [INFO] Inserted 124 rows into silver_arrivals
+2026-04-20 10:20:06,800 [INFO]   on_time: 89
+2026-04-20 10:20:06,800 [INFO]   early: 22
+2026-04-20 10:20:06,800 [INFO]   late: 8
+2026-04-20 10:20:06,800 [INFO]   very_late: 5
+2026-04-20 10:20:07,132 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:20:07,446 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:20:07,499 [INFO] Top routes by reliability_score:
+2026-04-20 10:20:07,499 [INFO]   E 26th Street                  on_time=100.0%  score=100.0
+2026-04-20 10:20:07,499 [INFO]   Asbury                         on_time=100.0%  score=100.0
+2026-04-20 10:20:07,500 [INFO]   Frontier                       on_time=100.0%  score=100.0
+2026-04-20 10:20:07,500 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:20:07,500 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:20:07,500 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:20:07,500 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:20:07,500 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:20:07,500 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:20:07,500 [INFO]   Westlake                       on_time=100.0%  score=100.0
+--- Mon Apr 20 10:25:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:25:01,650 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:25:01,982 [INFO] Loaded 32 route names
+2026-04-20 10:25:01,984 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:25:02,211 [INFO] Received 26 vehicles
+2026-04-20 10:25:02,231 [INFO] Mapped 26 vehicles to bronze rows
+2026-04-20 10:25:03,281 [INFO] Inserted 26 rows into bronze_vehicle_pings
+2026-04-20 10:25:03,642 [INFO] Processing bronze pings since 2026-04-19T14:25:03.642283+00:00
+2026-04-20 10:25:03,947 [INFO] Read 150 qualifying bronze rows
+2026-04-20 10:25:03,981 [INFO] Cleared existing silver rows since 2026-04-19T14:25:03.642283+00:00
+2026-04-20 10:25:07,752 [INFO] Inserted 150 rows into silver_arrivals
+2026-04-20 10:25:07,801 [INFO]   on_time: 109
+2026-04-20 10:25:07,801 [INFO]   early: 26
+2026-04-20 10:25:07,802 [INFO]   late: 9
+2026-04-20 10:25:07,802 [INFO]   very_late: 6
+2026-04-20 10:25:08,101 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:25:08,451 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:25:08,511 [INFO] Top routes by reliability_score:
+2026-04-20 10:25:08,511 [INFO]   E 26th Street                  on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   Asbury                         on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   Frontier                       on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:25:08,512 [INFO]   Westlake                       on_time=100.0%  score=100.0
+--- Mon Apr 20 10:30:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:30:01,509 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:30:01,794 [INFO] Loaded 32 route names
+2026-04-20 10:30:01,796 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:30:02,012 [INFO] Received 25 vehicles
+2026-04-20 10:30:02,015 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 10:30:03,507 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 10:30:03,859 [INFO] Processing bronze pings since 2026-04-19T14:30:03.859239+00:00
+2026-04-20 10:30:04,151 [INFO] Read 175 qualifying bronze rows
+2026-04-20 10:30:04,184 [INFO] Cleared existing silver rows since 2026-04-19T14:30:03.859239+00:00
+2026-04-20 10:30:08,584 [INFO] Inserted 175 rows into silver_arrivals
+2026-04-20 10:30:08,634 [INFO]   on_time: 127
+2026-04-20 10:30:08,635 [INFO]   early: 29
+2026-04-20 10:30:08,635 [INFO]   late: 12
+2026-04-20 10:30:08,635 [INFO]   very_late: 7
+2026-04-20 10:30:08,850 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:30:09,107 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:30:09,156 [INFO] Top routes by reliability_score:
+2026-04-20 10:30:09,156 [INFO]   Peach Street                   on_time=100.0%  score=100.0
+2026-04-20 10:30:09,156 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 10:30:09,156 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 10:30:09,157 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:30:09,157 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:30:09,157 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:30:09,157 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:30:09,157 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:30:09,157 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:30:09,157 [INFO]   Tacoma                         on_time=100.0%  score=100.0
+--- Mon Apr 20 10:35:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:35:00,728 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:35:01,049 [INFO] Loaded 32 route names
+2026-04-20 10:35:01,051 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:35:01,272 [INFO] Received 25 vehicles
+2026-04-20 10:35:01,275 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 10:35:02,185 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 10:35:02,344 [INFO] Processing bronze pings since 2026-04-19T14:35:02.344591+00:00
+2026-04-20 10:35:02,580 [INFO] Read 200 qualifying bronze rows
+2026-04-20 10:35:02,602 [INFO] Cleared existing silver rows since 2026-04-19T14:35:02.344591+00:00
+2026-04-20 10:35:06,764 [INFO] Inserted 200 rows into silver_arrivals
+2026-04-20 10:35:06,806 [INFO]   on_time: 144
+2026-04-20 10:35:06,807 [INFO]   early: 32
+2026-04-20 10:35:06,807 [INFO]   late: 16
+2026-04-20 10:35:06,807 [INFO]   very_late: 8
+2026-04-20 10:35:06,962 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:35:07,202 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:35:07,242 [INFO] Top routes by reliability_score:
+2026-04-20 10:35:07,242 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 10:35:07,242 [INFO]   Peach Street                   on_time=100.0%  score=100.0
+2026-04-20 10:35:07,243 [INFO]   Asbury                         on_time=100.0%  score=100.0
+2026-04-20 10:35:07,243 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:35:07,243 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:35:07,243 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:35:07,243 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:35:07,243 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:35:07,243 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:35:07,243 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+--- Mon Apr 20 10:40:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:40:00,744 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:40:01,052 [INFO] Loaded 32 route names
+2026-04-20 10:40:01,054 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:40:01,250 [INFO] Received 24 vehicles
+2026-04-20 10:40:01,253 [INFO] Mapped 24 vehicles to bronze rows
+2026-04-20 10:40:02,166 [INFO] Inserted 24 rows into bronze_vehicle_pings
+2026-04-20 10:40:02,319 [INFO] Processing bronze pings since 2026-04-19T14:40:02.318702+00:00
+2026-04-20 10:40:02,554 [INFO] Read 224 qualifying bronze rows
+2026-04-20 10:40:02,576 [INFO] Cleared existing silver rows since 2026-04-19T14:40:02.318702+00:00
+2026-04-20 10:40:07,402 [INFO] Inserted 224 rows into silver_arrivals
+2026-04-20 10:40:07,444 [INFO]   on_time: 161
+2026-04-20 10:40:07,444 [INFO]   early: 34
+2026-04-20 10:40:07,444 [INFO]   late: 20
+2026-04-20 10:40:07,444 [INFO]   very_late: 9
+2026-04-20 10:40:07,582 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:40:07,830 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:40:07,883 [INFO] Top routes by reliability_score:
+2026-04-20 10:40:07,883 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 10:40:07,883 [INFO]   Peach Street                   on_time=100.0%  score=100.0
+2026-04-20 10:40:07,884 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 10:40:07,884 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:40:07,884 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:40:07,884 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:40:07,884 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:40:07,884 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:40:07,884 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:40:07,884 [INFO]   Tacoma                         on_time=100.0%  score=100.0
+--- Mon Apr 20 10:45:01 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:45:01,564 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:45:01,805 [INFO] Loaded 32 route names
+2026-04-20 10:45:01,806 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:45:02,007 [INFO] Received 25 vehicles
+2026-04-20 10:45:02,011 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 10:45:02,894 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 10:45:03,129 [INFO] Processing bronze pings since 2026-04-19T14:45:03.129222+00:00
+2026-04-20 10:45:03,395 [INFO] Read 249 qualifying bronze rows
+2026-04-20 10:45:03,417 [INFO] Cleared existing silver rows since 2026-04-19T14:45:03.129222+00:00
+2026-04-20 10:45:08,958 [INFO] Inserted 249 rows into silver_arrivals
+2026-04-20 10:45:09,002 [INFO]   on_time: 180
+2026-04-20 10:45:09,002 [INFO]   early: 35
+2026-04-20 10:45:09,002 [INFO]   late: 24
+2026-04-20 10:45:09,002 [INFO]   very_late: 10
+2026-04-20 10:45:09,200 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:45:09,463 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:45:09,507 [INFO] Top routes by reliability_score:
+2026-04-20 10:45:09,508 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   Peach Street                   on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   Asbury                         on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:45:09,508 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+--- Mon Apr 20 10:50:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:50:01,229 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:50:01,506 [INFO] Loaded 32 route names
+2026-04-20 10:50:01,508 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:50:01,698 [INFO] Received 24 vehicles
+2026-04-20 10:50:01,710 [INFO] Mapped 24 vehicles to bronze rows
+2026-04-20 10:50:02,747 [INFO] Inserted 24 rows into bronze_vehicle_pings
+2026-04-20 10:50:02,987 [INFO] Processing bronze pings since 2026-04-19T14:50:02.987262+00:00
+2026-04-20 10:50:03,259 [INFO] Read 273 qualifying bronze rows
+2026-04-20 10:50:03,282 [INFO] Cleared existing silver rows since 2026-04-19T14:50:02.987262+00:00
+2026-04-20 10:50:09,115 [INFO] Inserted 273 rows into silver_arrivals
+2026-04-20 10:50:09,162 [INFO]   on_time: 198
+2026-04-20 10:50:09,162 [INFO]   early: 37
+2026-04-20 10:50:09,162 [INFO]   late: 27
+2026-04-20 10:50:09,162 [INFO]   very_late: 11
+2026-04-20 10:50:09,341 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:50:09,605 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:50:09,650 [INFO] Top routes by reliability_score:
+2026-04-20 10:50:09,651 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 10:50:09,651 [INFO]   Peach Street                   on_time=100.0%  score=100.0
+2026-04-20 10:50:09,651 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 10:50:09,651 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:50:09,652 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:50:09,652 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:50:09,652 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:50:09,652 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:50:09,652 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:50:09,652 [INFO]   Tacoma                         on_time=100.0%  score=100.0
+--- Mon Apr 20 10:55:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 10:55:01,697 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 10:55:01,990 [INFO] Loaded 32 route names
+2026-04-20 10:55:01,991 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 10:55:02,217 [INFO] Received 25 vehicles
+2026-04-20 10:55:02,220 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 10:55:03,308 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 10:55:03,650 [INFO] Processing bronze pings since 2026-04-19T14:55:03.650032+00:00
+2026-04-20 10:55:04,088 [INFO] Read 298 qualifying bronze rows
+2026-04-20 10:55:04,110 [INFO] Cleared existing silver rows since 2026-04-19T14:55:03.650032+00:00
+2026-04-20 10:55:11,637 [INFO] Inserted 298 rows into silver_arrivals
+2026-04-20 10:55:11,687 [INFO]   on_time: 217
+2026-04-20 10:55:11,687 [INFO]   early: 40
+2026-04-20 10:55:11,687 [INFO]   late: 29
+2026-04-20 10:55:11,687 [INFO]   very_late: 12
+2026-04-20 10:55:12,017 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 10:55:12,362 [INFO] Upserted gold_route_reliability (48 rows affected)
+2026-04-20 10:55:12,415 [INFO] Top routes by reliability_score:
+2026-04-20 10:55:12,415 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 10:55:12,415 [INFO]   Peach Street                   on_time=100.0%  score=100.0
+2026-04-20 10:55:12,416 [INFO]   Asbury                         on_time=100.0%  score=100.0
+2026-04-20 10:55:12,416 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 10:55:12,416 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 10:55:12,416 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 10:55:12,416 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 10:55:12,416 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 10:55:12,416 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 10:55:12,416 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+--- Mon Apr 20 11:00:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 11:00:01,469 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 11:00:01,805 [INFO] Loaded 32 route names
+2026-04-20 11:00:01,807 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 11:00:02,026 [INFO] Received 25 vehicles
+2026-04-20 11:00:02,047 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 11:00:03,315 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 11:00:03,671 [INFO] Processing bronze pings since 2026-04-19T15:00:03.670929+00:00
+2026-04-20 11:00:03,972 [INFO] Read 323 qualifying bronze rows
+2026-04-20 11:00:03,995 [INFO] Cleared existing silver rows since 2026-04-19T15:00:03.670929+00:00
+2026-04-20 11:00:12,565 [INFO] Inserted 323 rows into silver_arrivals
+2026-04-20 11:00:12,617 [INFO]   on_time: 238
+2026-04-20 11:00:12,617 [INFO]   early: 40
+2026-04-20 11:00:12,617 [INFO]   late: 32
+2026-04-20 11:00:12,617 [INFO]   very_late: 13
+2026-04-20 11:00:12,926 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 11:00:13,228 [INFO] Upserted gold_route_reliability (65 rows affected)
+2026-04-20 11:00:13,273 [INFO] Top routes by reliability_score:
+2026-04-20 11:00:13,273 [INFO]   Corry Loop                     on_time=100.0%  score=100.0
+2026-04-20 11:00:13,273 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 11:00:13,273 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 11:00:13,273 [INFO]   Lawrence Park                  on_time=100.0%  score=100.0
+2026-04-20 11:00:13,273 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 11:00:13,273 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 11:00:13,274 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:00:13,274 [INFO]   Liberty Street                 on_time=100.0%  score=100.0
+2026-04-20 11:00:13,274 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 11:00:13,274 [INFO]   Asbury                         on_time=100.0%  score=100.0
+--- Mon Apr 20 11:05:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 11:05:01,321 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 11:05:01,608 [INFO] Loaded 32 route names
+2026-04-20 11:05:01,609 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 11:05:01,836 [INFO] Received 25 vehicles
+2026-04-20 11:05:01,856 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 11:05:02,954 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 11:05:03,311 [INFO] Processing bronze pings since 2026-04-19T15:05:03.310806+00:00
+2026-04-20 11:05:03,656 [INFO] Read 348 qualifying bronze rows
+2026-04-20 11:05:03,678 [INFO] Cleared existing silver rows since 2026-04-19T15:05:03.310806+00:00
+2026-04-20 11:05:12,421 [INFO] Inserted 348 rows into silver_arrivals
+2026-04-20 11:05:12,474 [INFO]   on_time: 257
+2026-04-20 11:05:12,474 [INFO]   early: 43
+2026-04-20 11:05:12,474 [INFO]   late: 34
+2026-04-20 11:05:12,474 [INFO]   very_late: 14
+2026-04-20 11:05:12,764 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 11:05:13,051 [INFO] Upserted gold_route_reliability (65 rows affected)
+2026-04-20 11:05:13,102 [INFO] Top routes by reliability_score:
+2026-04-20 11:05:13,102 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   Corry Loop                     on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   Lawrence Park                  on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:05:13,103 [INFO]   Asbury                         on_time=100.0%  score=100.0
+--- Mon Apr 20 11:10:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 11:10:01,303 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 11:10:01,632 [INFO] Loaded 32 route names
+2026-04-20 11:10:01,634 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 11:10:01,842 [INFO] Received 26 vehicles
+2026-04-20 11:10:01,845 [INFO] Mapped 26 vehicles to bronze rows
+2026-04-20 11:10:02,783 [INFO] Inserted 26 rows into bronze_vehicle_pings
+2026-04-20 11:10:02,982 [INFO] Processing bronze pings since 2026-04-19T15:10:02.981683+00:00
+2026-04-20 11:10:03,279 [INFO] Read 374 qualifying bronze rows
+2026-04-20 11:10:03,307 [INFO] Cleared existing silver rows since 2026-04-19T15:10:02.981683+00:00
+2026-04-20 11:10:12,163 [INFO] Inserted 374 rows into silver_arrivals
+2026-04-20 11:10:12,210 [INFO]   on_time: 277
+2026-04-20 11:10:12,210 [INFO]   early: 46
+2026-04-20 11:10:12,210 [INFO]   late: 36
+2026-04-20 11:10:12,210 [INFO]   very_late: 15
+2026-04-20 11:10:12,379 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 11:10:12,632 [INFO] Upserted gold_route_reliability (66 rows affected)
+2026-04-20 11:10:12,682 [INFO] Top routes by reliability_score:
+2026-04-20 11:10:12,683 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 11:10:12,683 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 11:10:12,683 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 11:10:12,683 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 11:10:12,683 [INFO]   Corry Loop                     on_time=100.0%  score=100.0
+2026-04-20 11:10:12,683 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 11:10:12,683 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:10:12,683 [INFO]   Lawrence Park                  on_time=100.0%  score=100.0
+2026-04-20 11:10:12,683 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:10:12,684 [INFO]   McClelland                     on_time=100.0%  score=100.0
+--- Mon Apr 20 11:15:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 11:15:01,160 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 11:15:01,384 [INFO] Loaded 32 route names
+2026-04-20 11:15:01,386 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 11:15:01,603 [INFO] Received 25 vehicles
+2026-04-20 11:15:01,605 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 11:15:02,457 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 11:15:02,601 [INFO] Processing bronze pings since 2026-04-19T15:15:02.601568+00:00
+2026-04-20 11:15:02,857 [INFO] Read 399 qualifying bronze rows
+2026-04-20 11:15:02,879 [INFO] Cleared existing silver rows since 2026-04-19T15:15:02.601568+00:00
+2026-04-20 11:15:11,287 [INFO] Inserted 399 rows into silver_arrivals
+2026-04-20 11:15:11,331 [INFO]   on_time: 295
+2026-04-20 11:15:11,332 [INFO]   early: 48
+2026-04-20 11:15:11,332 [INFO]   late: 40
+2026-04-20 11:15:11,332 [INFO]   very_late: 16
+2026-04-20 11:15:11,466 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 11:15:11,720 [INFO] Upserted gold_route_reliability (66 rows affected)
+2026-04-20 11:15:11,765 [INFO] Top routes by reliability_score:
+2026-04-20 11:15:11,766 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   Corry Loop                     on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   Lawrence Park                  on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 11:15:11,766 [INFO]   McClelland                     on_time=100.0%  score=100.0
+--- Mon Apr 20 11:20:01 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 11:20:03,261 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 11:20:03,544 [INFO] Loaded 32 route names
+2026-04-20 11:20:03,545 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 11:20:03,794 [INFO] Received 25 vehicles
+2026-04-20 11:20:03,796 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 11:20:04,763 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 11:20:04,977 [INFO] Processing bronze pings since 2026-04-19T15:20:04.976887+00:00
+2026-04-20 11:20:05,256 [INFO] Read 424 qualifying bronze rows
+2026-04-20 11:20:05,293 [INFO] Cleared existing silver rows since 2026-04-19T15:20:04.976887+00:00
+2026-04-20 11:20:15,914 [INFO] Inserted 424 rows into silver_arrivals
+2026-04-20 11:20:15,964 [INFO]   on_time: 317
+2026-04-20 11:20:15,964 [INFO]   early: 49
+2026-04-20 11:20:15,964 [INFO]   late: 41
+2026-04-20 11:20:15,964 [INFO]   very_late: 17
+2026-04-20 11:20:16,353 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 11:20:16,694 [INFO] Upserted gold_route_reliability (66 rows affected)
+2026-04-20 11:20:16,744 [INFO] Top routes by reliability_score:
+2026-04-20 11:20:16,744 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   Corry Loop                     on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 11:20:16,745 [INFO]   Erie Heights                   on_time=100.0%  score=100.0
+--- Mon Apr 20 11:25:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 11:25:01,452 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 11:25:01,675 [INFO] Loaded 32 route names
+2026-04-20 11:25:01,676 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 11:25:01,877 [INFO] Received 25 vehicles
+2026-04-20 11:25:01,881 [INFO] Mapped 25 vehicles to bronze rows
+2026-04-20 11:25:02,801 [INFO] Inserted 25 rows into bronze_vehicle_pings
+2026-04-20 11:25:02,951 [INFO] Processing bronze pings since 2026-04-19T15:25:02.951390+00:00
+2026-04-20 11:25:03,207 [INFO] Read 449 qualifying bronze rows
+2026-04-20 11:25:03,229 [INFO] Cleared existing silver rows since 2026-04-19T15:25:02.951390+00:00
+2026-04-20 11:25:12,945 [INFO] Inserted 449 rows into silver_arrivals
+2026-04-20 11:25:12,988 [INFO]   on_time: 335
+2026-04-20 11:25:12,989 [INFO]   early: 52
+2026-04-20 11:25:12,989 [INFO]   late: 44
+2026-04-20 11:25:12,989 [INFO]   very_late: 18
+2026-04-20 11:25:13,136 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 11:25:13,385 [INFO] Upserted gold_route_reliability (67 rows affected)
+2026-04-20 11:25:13,430 [INFO] Top routes by reliability_score:
+2026-04-20 11:25:13,430 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 11:25:13,430 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 11:25:13,430 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 11:25:13,431 [INFO]   Corry Loop                     on_time=100.0%  score=100.0
+2026-04-20 11:25:13,431 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 11:25:13,431 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:25:13,431 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:25:13,431 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 11:25:13,431 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 11:25:13,431 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+--- Mon Apr 20 11:30:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 11:30:01,040 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 11:30:01,348 [INFO] Loaded 32 route names
+2026-04-20 11:30:01,350 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 11:30:01,564 [INFO] Received 27 vehicles
+2026-04-20 11:30:01,567 [INFO] Mapped 27 vehicles to bronze rows
+2026-04-20 11:30:02,532 [INFO] Inserted 27 rows into bronze_vehicle_pings
+2026-04-20 11:30:02,682 [INFO] Processing bronze pings since 2026-04-19T15:30:02.682179+00:00
+2026-04-20 11:30:02,956 [INFO] Read 503 qualifying bronze rows
+2026-04-20 11:30:02,981 [INFO] Cleared existing silver rows since 2026-04-19T15:30:02.682179+00:00
+2026-04-20 11:30:15,323 [INFO] Inserted 503 rows into silver_arrivals
+2026-04-20 11:30:15,378 [INFO]   on_time: 374
+2026-04-20 11:30:15,378 [INFO]   early: 56
+2026-04-20 11:30:15,379 [INFO]   late: 53
+2026-04-20 11:30:15,379 [INFO]   very_late: 20
+2026-04-20 11:30:15,513 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 11:30:15,746 [INFO] Upserted gold_route_reliability (67 rows affected)
+2026-04-20 11:30:15,788 [INFO] Top routes by reliability_score:
+2026-04-20 11:30:15,788 [INFO]   Erie Heights                   on_time=100.0%  score=100.0
+2026-04-20 11:30:15,788 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 11:30:15,788 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 11:30:15,789 [INFO]   Belle Valley                   on_time=100.0%  score=100.0
+2026-04-20 11:30:15,789 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 11:30:15,789 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 11:30:15,789 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 11:30:15,789 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 11:30:15,789 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 11:30:15,789 [INFO]   Peach Street                   on_time=100.0%  score=100.0
+--- Mon Apr 20 14:50:00 EDT 2026 ---
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-20 14:50:01,016 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-20 14:50:01,332 [INFO] Loaded 32 route names
+2026-04-20 14:50:01,334 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-20 14:50:01,563 [INFO] Received 29 vehicles
+2026-04-20 14:50:01,565 [INFO] Mapped 29 vehicles to bronze rows
+2026-04-20 14:50:02,640 [INFO] Inserted 29 rows into bronze_vehicle_pings
+2026-04-20 14:50:02,793 [INFO] Processing bronze pings since 2026-04-19T18:50:02.792717+00:00
+2026-04-20 14:50:03,065 [INFO] Read 643 qualifying bronze rows
+2026-04-20 14:50:03,087 [INFO] Cleared existing silver rows since 2026-04-19T18:50:02.792717+00:00
+2026-04-20 14:50:16,908 [INFO] Inserted 643 rows into silver_arrivals
+2026-04-20 14:50:16,952 [INFO]   on_time: 475
+2026-04-20 14:50:16,952 [INFO]   late: 70
+2026-04-20 14:50:16,953 [INFO]   early: 69
+2026-04-20 14:50:16,953 [INFO]   very_late: 29
+2026-04-20 14:50:17,150 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-20 14:50:17,411 [INFO] Upserted gold_route_reliability (123 rows affected)
+2026-04-20 14:50:17,456 [INFO] Top routes by reliability_score:
+2026-04-20 14:50:17,456 [INFO]   Erie Heights                   on_time=100.0%  score=100.0
+2026-04-20 14:50:17,456 [INFO]   PSB Shuttle                    on_time=100.0%  score=100.0
+2026-04-20 14:50:17,456 [INFO]   McClelland                     on_time=100.0%  score=100.0
+2026-04-20 14:50:17,457 [INFO]   North East                     on_time=100.0%  score=100.0
+2026-04-20 14:50:17,457 [INFO]   UPMC Hamot                     on_time=100.0%  score=100.0
+2026-04-20 14:50:17,457 [INFO]   Westlake                       on_time=100.0%  score=100.0
+2026-04-20 14:50:17,457 [INFO]   West County - BPS              on_time=100.0%  score=100.0
+2026-04-20 14:50:17,457 [INFO]   Deadhead                       on_time=100.0%  score=100.0
+2026-04-20 14:50:17,457 [INFO]   Corry Loop                     on_time=100.0%  score=100.0
+2026-04-20 14:50:17,457 [INFO]   Tacoma                         on_time=100.0%  score=100.0
