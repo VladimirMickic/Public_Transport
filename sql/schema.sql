@@ -89,3 +89,13 @@ CREATE TABLE IF NOT EXISTS ai_weekly_insights (
     headline_text   TEXT,                    -- ≤100 char headline / email subject
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- AI-generated daily insights (one row per day)
+CREATE TABLE IF NOT EXISTS ai_daily_insights (
+    id              BIGSERIAL PRIMARY KEY,
+    report_date     DATE NOT NULL UNIQUE,    -- Specific date of the report
+    narrative       TEXT NOT NULL,           -- Multi-paragraph analysis
+    tweet_draft     TEXT,                    -- ≤280 char social post
+    headline_text   TEXT,                    -- ≤100 char headline
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
