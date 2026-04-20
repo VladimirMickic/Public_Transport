@@ -1,0 +1,54 @@
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-19 21:55:00,541 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-19 21:55:00,811 [INFO] Loaded 32 route names
+2026-04-19 21:55:00,812 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-19 21:55:00,984 [INFO] Received 0 vehicles
+2026-04-19 21:55:00,985 [INFO] No vehicles returned (possibly outside service hours). Nothing to insert.
+2026-04-19 21:55:01,137 [INFO] Processing bronze pings since 2026-04-19T01:55:01.137166+00:00
+2026-04-19 21:55:01,363 [INFO] Read 0 qualifying bronze rows
+2026-04-19 21:55:01,364 [INFO] No rows to process. Done.
+2026-04-19 21:55:01,495 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-19 21:55:01,747 [INFO] Upserted gold_route_reliability (0 rows affected)
+2026-04-19 21:55:01,805 [INFO] No gold rows produced (silver_arrivals may be empty).
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-19 22:00:01,311 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-19 22:00:01,605 [INFO] Loaded 32 route names
+2026-04-19 22:00:01,606 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-19 22:00:01,771 [INFO] Received 0 vehicles
+2026-04-19 22:00:01,773 [INFO] No vehicles returned (possibly outside service hours). Nothing to insert.
+2026-04-19 22:00:01,944 [INFO] Processing bronze pings since 2026-04-19T02:00:01.944348+00:00
+2026-04-19 22:00:02,195 [INFO] Read 0 qualifying bronze rows
+2026-04-19 22:00:02,195 [INFO] No rows to process. Done.
+2026-04-19 22:00:02,364 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-19 22:00:02,610 [INFO] Upserted gold_route_reliability (0 rows affected)
+2026-04-19 22:00:02,658 [INFO] No gold rows produced (silver_arrivals may be empty).
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-19 22:05:01,172 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-19 22:05:01,444 [INFO] Loaded 32 route names
+2026-04-19 22:05:01,446 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-19 22:05:01,616 [INFO] Received 0 vehicles
+2026-04-19 22:05:01,618 [INFO] No vehicles returned (possibly outside service hours). Nothing to insert.
+2026-04-19 22:05:01,775 [INFO] Processing bronze pings since 2026-04-19T02:05:01.774726+00:00
+2026-04-19 22:05:02,150 [INFO] Read 0 qualifying bronze rows
+2026-04-19 22:05:02,151 [INFO] No rows to process. Done.
+2026-04-19 22:05:02,283 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-19 22:05:02,535 [INFO] Upserted gold_route_reliability (0 rows affected)
+2026-04-19 22:05:02,577 [INFO] No gold rows produced (silver_arrivals may be empty).
+/Users/hugorabbit/Public Transport/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+2026-04-19 22:10:01,233 [INFO] Fetching route names from https://emta.availtec.com/InfoPoint/rest/Routes/GetAllRoutes
+2026-04-19 22:10:01,443 [INFO] Loaded 32 route names
+2026-04-19 22:10:01,445 [INFO] Fetching vehicles from https://emta.availtec.com/InfoPoint/rest/Vehicles/GetAllVehicles
+2026-04-19 22:10:01,610 [INFO] Received 0 vehicles
+2026-04-19 22:10:01,612 [INFO] No vehicles returned (possibly outside service hours). Nothing to insert.
+2026-04-19 22:10:01,830 [INFO] Processing bronze pings since 2026-04-19T02:10:01.830047+00:00
+2026-04-19 22:10:02,212 [INFO] Read 0 qualifying bronze rows
+2026-04-19 22:10:02,212 [INFO] No rows to process. Done.
+2026-04-19 22:10:02,460 [INFO] Aggregating silver_arrivals → gold_route_reliability
+2026-04-19 22:10:02,719 [INFO] Upserted gold_route_reliability (0 rows affected)
+2026-04-19 22:10:02,763 [INFO] No gold rows produced (silver_arrivals may be empty).
+/bin/bash: /Users/hugorabbit/Public Transport/run_pipeline.sh: No such file or directory
+/bin/bash: /Users/hugorabbit/Public Transport/run_pipeline.sh: No such file or directory
