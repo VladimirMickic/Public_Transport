@@ -9,7 +9,15 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
+
+# Make the project root importable when Streamlit launches this file directly
+# (`streamlit run dashboard/app.py` only adds dashboard/ to sys.path).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -212,7 +220,7 @@ with tab_overview:
             SELECT route_name, hour_of_day, reliability_score
             FROM gold_route_reliability
             WHERE hour_of_day IN (7, 8, 16, 17, 18)
-              AND total_pings >= 5
+              AND total_pings >= 25
             ORDER BY reliability_score ASC
             LIMIT 1
         """
@@ -436,16 +444,23 @@ with tab_map:
         heat = run_query(heat_sql)
 
         if heat:
-            fig_hm = px.density_mapbox(
+            # Scatter (not density) so color reflects avg_delay only.
+            # density_mapbox weights a KDE by z, so dense-ping areas look red
+            # even when their delays are low.
+            fig_hm = px.scatter_mapbox(
                 heat,
                 lat="lat_grid",
                 lon="lon_grid",
-                z="avg_delay",
-                radius=20,
+                color="avg_delay",
+                size="pings",
+                size_max=25,
                 zoom=11,
                 height=600,
-                title="Today's Delay Heatmap",
+                title="Today's Delay Heatmap (color = avg delay, size = ping count)",
                 color_continuous_scale="RdYlGn_r",
+                range_color=[-5, 15],
+                hover_data={"avg_delay": True, "pings": True,
+                            "lat_grid": False, "lon_grid": False},
             )
             fig_hm.update_layout(
                 mapbox_style="carto-positron",
