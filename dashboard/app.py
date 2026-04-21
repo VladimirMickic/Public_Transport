@@ -119,7 +119,10 @@ st.sidebar.image("https://emta.availtec.com/InfoPoint/Content/images/logo.png", 
 st.sidebar.title("Filters")
 
 default_end = date.today()
-default_start = default_end - timedelta(days=30)
+# Landing view shows today only — the live, actionable picture. Users who
+# want context can drag the picker back; the historical window is one click
+# away but shouldn't be the default framing.
+default_start = default_end
 date_range = st.sidebar.date_input(
     "Date range",
     value=(default_start, default_end),
@@ -191,14 +194,13 @@ tab_overview, tab_route, tab_map, tab_digest = st.tabs(
 with tab_overview:
     st.subheader("System Performance Overview")
 
-    # Human-friendly date caption right under the header. A single-day pick
-    # reads "Apr 21, 2026" (no trailing dash); a range reads "Apr 1 – Apr 21, 2026".
+    # Single-day pick reads "2026-04-21"; a range reads "2026-04-01 – 2026-04-21".
     if filter_start == filter_end:
-        st.caption(f"📅 {filter_start.strftime('%b %d, %Y')}")
+        st.caption(f"📅 {filter_start.strftime('%Y-%m-%d')}")
     else:
         st.caption(
-            f"📅 {filter_start.strftime('%b %d')} – "
-            f"{filter_end.strftime('%b %d, %Y')}"
+            f"📅 {filter_start.strftime('%Y-%m-%d')} – "
+            f"{filter_end.strftime('%Y-%m-%d')}"
         )
 
     # ── Key metrics from silver (date-filtered) ──────────
@@ -228,7 +230,14 @@ with tab_overview:
         WHERE observed_at::date BETWEEN %s AND %s
         {direction_filter_sql}
     """
-    metrics = run_query(metrics_sql, [filter_start, filter_end] + direction_params)
+    # live=True (60s TTL) so the city KPI strip reflects each 5-min ETL
+    # batch as soon as it lands, instead of waiting out a 5-min cache that
+    # can drift out of phase with the autorefresh timer.
+    metrics = run_query(
+        metrics_sql,
+        [filter_start, filter_end] + direction_params,
+        live=True,
+    )
 
     if metrics and metrics[0]["total_pings"] and metrics[0]["total_pings"] > 0:
         m = metrics[0]
@@ -291,57 +300,131 @@ with tab_overview:
                     key="trend_bucket_choice",
                 )
 
+            # Adaptive granularity: a single day gets an hourly arc,
+            # medium ranges (2–4 days) get 6-hour windows that align to the
+            # natural morning/midday/evening/overnight frame, and longer
+            # ranges roll up to daily points. Prevents the "one dot" result
+            # that a day-granularity query produces on a single-day filter.
+            span_days = (filter_end - filter_start).days + 1
+            if span_days <= 1:
+                grain = "hour"
+            elif span_days <= 4:
+                grain = "6h"
+            else:
+                grain = "day"
+
+            # Every branch returns rows with (bucket, pct). The bucket
+            # expression is different per grain; the metric expression is
+            # different depending on whether the user picked on_time vs
+            # early/late/very_late.
             if selected_bucket and selected_bucket != "on_time":
-                trend_sql = f"""
-                    SELECT observed_at::date AS day,
-                           ROUND(
-                               COUNT(*) FILTER (WHERE delay_bucket = %s) * 100.0
-                               / NULLIF(COUNT(*), 0), 1
-                           ) AS pct
-                    FROM silver_arrivals
-                    WHERE observed_at::date BETWEEN %s AND %s
-                    {direction_filter_sql}
-                    GROUP BY day
-                    ORDER BY day
-                """
-                trend_params = [selected_bucket, filter_start, filter_end] + direction_params
-                trend_title = f"Daily {selected_bucket.replace('_', ' ').title()} %"
+                metric_sql = (
+                    "ROUND(COUNT(*) FILTER (WHERE delay_bucket = %s) * 100.0"
+                    " / NULLIF(COUNT(*), 0), 1) AS pct"
+                )
+                metric_params = [selected_bucket]
+                pretty_metric = selected_bucket.replace("_", " ").title()
                 line_color = COLORS.get(selected_bucket, "#22c55e")
             else:
+                metric_sql = (
+                    "ROUND(COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0"
+                    " / NULLIF(COUNT(*), 0), 1) AS pct"
+                )
+                metric_params = []
+                pretty_metric = "On-Time"
+                line_color = COLORS["on_time"]
+
+            if grain == "hour":
+                # Use the silver hour_of_day column (already ET-local) for a
+                # 24-bin hourly arc. Return integer hour 0–23; we format it
+                # to a "HH:00" category axis in Python.
                 trend_sql = f"""
-                    SELECT observed_at::date AS day,
-                           ROUND(
-                               COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
-                               / NULLIF(COUNT(*), 0), 1
-                           ) AS pct
+                    SELECT hour_of_day AS bucket_key,
+                           {metric_sql}
                     FROM silver_arrivals
                     WHERE observed_at::date BETWEEN %s AND %s
                     {direction_filter_sql}
-                    GROUP BY day
-                    ORDER BY day
+                    GROUP BY hour_of_day
+                    ORDER BY hour_of_day
                 """
-                trend_params = [filter_start, filter_end] + direction_params
-                trend_title = "Daily On-Time %"
-                line_color = COLORS["on_time"]
+                trend_title = f"Hourly {pretty_metric} %"
+            elif grain == "6h":
+                # 6-hour windows anchored at 00/06/12/18 ET. Dividing
+                # hour_of_day by 6 via integer math gives the window index,
+                # then * 6 gets the start hour.
+                trend_sql = f"""
+                    SELECT observed_at::date AS bucket_day,
+                           (hour_of_day / 6) * 6 AS bucket_hour,
+                           {metric_sql}
+                    FROM silver_arrivals
+                    WHERE observed_at::date BETWEEN %s AND %s
+                    {direction_filter_sql}
+                    GROUP BY bucket_day, bucket_hour
+                    ORDER BY bucket_day, bucket_hour
+                """
+                trend_title = f"{pretty_metric} % — 6-hour windows"
+            else:
+                trend_sql = f"""
+                    SELECT observed_at::date AS bucket_day,
+                           {metric_sql}
+                    FROM silver_arrivals
+                    WHERE observed_at::date BETWEEN %s AND %s
+                    {direction_filter_sql}
+                    GROUP BY bucket_day
+                    ORDER BY bucket_day
+                """
+                trend_title = f"Daily {pretty_metric} %"
 
+            trend_params = metric_params + [filter_start, filter_end] + direction_params
             trend = run_query(trend_sql, trend_params)
 
             with col_trend:
                 if trend:
+                    import pandas as pd
+                    df_trend = pd.DataFrame(trend)
+                    if grain == "hour":
+                        df_trend["x_label"] = df_trend["bucket_key"].apply(
+                            lambda h: f"{int(h):02d}:00"
+                        )
+                        # Force all 24 slots so the line spans the full day
+                        # even when some hours have no data. Missing hours
+                        # plot as gaps, not compressed points.
+                        full_hours = pd.DataFrame({
+                            "x_label": [f"{h:02d}:00" for h in range(24)],
+                        })
+                        df_trend = full_hours.merge(df_trend, on="x_label", how="left")
+                        x_col, x_label = "x_label", "Hour (ET)"
+                        xaxis_cfg = dict(
+                            type="category",
+                            categoryorder="array",
+                            categoryarray=[f"{h:02d}:00" for h in range(24)],
+                        )
+                    elif grain == "6h":
+                        df_trend["bucket_ts"] = pd.to_datetime(
+                            df_trend["bucket_day"]
+                        ) + pd.to_timedelta(df_trend["bucket_hour"], unit="h")
+                        x_col, x_label = "bucket_ts", "Window start (ET)"
+                        xaxis_cfg = dict(type="date", tickformat="%m/%d %H:00")
+                    else:
+                        df_trend["bucket_ts"] = pd.to_datetime(df_trend["bucket_day"])
+                        x_col, x_label = "bucket_ts", "Date"
+                        xaxis_cfg = dict(type="date", tickformat="%b %d")
+
                     fig_trend = px.line(
-                        trend, x="day", y="pct",
+                        df_trend, x=x_col, y="pct",
                         title=trend_title,
-                        labels={"day": "Date", "pct": trend_title.split(" ", 1)[1]},
+                        labels={x_col: x_label, "pct": f"{pretty_metric} %"},
                         markers=True,
                     )
                     fig_trend.update_layout(
                         **PLOTLY_LAYOUT,
-                        xaxis=dict(type="date", tickformat="%b %d"),
+                        xaxis=xaxis_cfg,
                         yaxis=dict(range=[0, 100]),
                     )
                     fig_trend.update_traces(
                         line=dict(color=line_color, width=3),
-                        marker=dict(size=10, color=line_color),
+                        marker=dict(size=8, color=line_color),
+                        connectgaps=False,
                     )
                     st.plotly_chart(fig_trend, use_container_width=True)
 
@@ -352,21 +435,31 @@ with tab_overview:
         # adherence penalty (10 points per minute of |lateness or earliness|,
         # capped at 100). Only moving buses (speed > 2) count, matching the
         # rest of the dashboard's convention.
+        #
+        # HAVING COUNT(*) >= 100 (was 30) — a single rush hour across a range
+        # needs a real sample before we label it "worst"; below that we get
+        # tripper / detour noise. Tie-breaker is AVG(|adherence|) DESC so
+        # when multiple routes bottom out at 0/100 the banner names the one
+        # that's *actually* the most off schedule, not whichever the planner
+        # happened to return first.
         worst_sql = f"""
             SELECT route_id, route_name, hour_of_day,
                    GREATEST(0, ROUND(
                        (100 - LEAST(100, AVG(ABS(adherence_minutes)) * 10))::numeric, 2
                    )) AS reliability_score,
+                   ROUND(AVG(ABS(adherence_minutes))::numeric, 1) AS avg_abs_delay,
+                   ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_signed_delay,
                    COUNT(*) AS total_pings
             FROM silver_arrivals
             WHERE observed_at::date BETWEEN %s AND %s
               AND hour_of_day IN (7, 8, 16, 17, 18)
               AND speed > 2
               AND adherence_minutes IS NOT NULL
+              AND route_id NOT IN ('98', '99', '999')
               {direction_filter_sql}
             GROUP BY route_id, route_name, hour_of_day
-            HAVING COUNT(*) >= 30
-            ORDER BY reliability_score ASC
+            HAVING COUNT(*) >= 100
+            ORDER BY reliability_score ASC, avg_abs_delay DESC
             LIMIT 1
         """
         worst = run_query(
@@ -376,12 +469,16 @@ with tab_overview:
         )
         if worst:
             w = worst[0]
-            hour_label = f"{w['hour_of_day']}:00"
+            hour_label = f"{int(w['hour_of_day']):02d}:00"
             route_label = format_route(w["route_id"], w["route_name"])
+            signed = w["avg_signed_delay"]
+            direction_word = "late" if signed is not None and signed >= 0 else "early"
             st.warning(
                 f"⚠️ **Worst peak-hour route** (in selected range): "
-                f"{route_label} at {hour_label} "
-                f"— reliability score **{w['reliability_score']}**/100"
+                f"{route_label} at {hour_label} — reliability "
+                f"**{w['reliability_score']}**/100 "
+                f"· avg {abs(signed) if signed is not None else '—'} min "
+                f"{direction_word} across {w['total_pings']:,} pings"
             )
 
         # ── Route reliability heatmap ────────────────────
@@ -401,6 +498,7 @@ with tab_overview:
               AND speed > 2
               AND adherence_minutes IS NOT NULL
               AND route_name IS NOT NULL
+              AND route_id NOT IN ('98', '99', '999')
               {direction_filter_sql}
             GROUP BY route_id, route_name, hour_of_day
             HAVING COUNT(*) >= 2
@@ -457,11 +555,23 @@ with tab_overview:
 with tab_route:
     st.subheader("Route Detail Analysis")
 
-    # Get available routes
+    # Pull the dropdown options from bronze rather than silver. Silver drops
+    # any ping with no schedule data (adherence_minutes IS NULL), which was
+    # hiding low-frequency revenue routes like 1 Glenwood, 11 Harborcreek,
+    # and 15 E 38th whenever Avail didn't publish adherence for them. Bronze
+    # keeps every on-route ping, so any route that's actually carried
+    # passengers in the last 30 days shows up.
+    #
+    # 98/99 (AM/PM Trippers) and 999 (dead-head repositioning) are filtered
+    # out: they aren't rider-facing services, so they don't belong in a
+    # route-picker.
     routes_sql = """
         SELECT DISTINCT route_id, route_name
-        FROM silver_arrivals
-        WHERE route_name IS NOT NULL
+        FROM bronze_vehicle_pings
+        WHERE is_on_route = TRUE
+          AND route_name IS NOT NULL
+          AND route_id NOT IN ('98', '99', '999')
+          AND observed_at >= NOW() - INTERVAL '30 days'
     """
     routes = run_query(routes_sql)
 
@@ -929,6 +1039,7 @@ with tab_digest:
               AND speed > 2
               AND adherence_minutes IS NOT NULL
               AND route_name IS NOT NULL
+              AND route_id NOT IN ('98', '99', '999')
             GROUP BY route_id, route_name
             HAVING COUNT(*) >= 20
             ORDER BY reliability ASC
