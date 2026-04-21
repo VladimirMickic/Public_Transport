@@ -47,10 +47,17 @@ def already_generated(conn, report_date):
         return cur.fetchone() is not None
 
 
+MOVING_SPEED_MPH = 2  # Pings below this are treated as parked/idle and excluded
+
+
 def fetch_daily_summary(conn, report_date):
-    """Fetch daily aggregated reliability data from silver_arrivals."""
+    """Fetch daily aggregated reliability data from silver_arrivals.
+
+    Only includes pings where the bus is moving (speed > MOVING_SPEED_MPH),
+    which naturally bounds the window from first to last active ride.
+    """
     sql = """
-        SELECT 
+        SELECT
             route_name,
             COUNT(*) AS total_pings,
             ROUND(COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0 / NULLIF(COUNT(*), 0), 2) AS on_time_pct,
@@ -58,18 +65,22 @@ def fetch_daily_summary(conn, report_date):
         FROM silver_arrivals
         WHERE observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= %s::date
           AND observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' < (%s::date + INTERVAL '1 day')
+          AND speed > %s
         GROUP BY route_name
         HAVING COUNT(*) >= 5
         ORDER BY on_time_pct ASC
         LIMIT 40
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(sql, (report_date, report_date))
+        cur.execute(sql, (report_date, report_date, MOVING_SPEED_MPH))
         return cur.fetchall()
 
 
 def fetch_system_stats(conn, report_date):
-    """Fetch high-level system stats for the daily narrative."""
+    """Fetch high-level system stats for the daily narrative.
+
+    Moving-buses only; first/last active ride defines the reporting window.
+    """
     sql = """
         SELECT
             COUNT(*) AS total_pings,
@@ -79,13 +90,16 @@ def fetch_system_stats(conn, report_date):
                 COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
                 / NULLIF(COUNT(*), 0), 1
             ) AS system_on_time_pct,
-            COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late_count
+            COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late_count,
+            MIN(observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') AS first_ride,
+            MAX(observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') AS last_ride
         FROM silver_arrivals
         WHERE observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= %s::date
           AND observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' < (%s::date + INTERVAL '1 day')
+          AND speed > %s
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(sql, (report_date, report_date))
+        cur.execute(sql, (report_date, report_date, MOVING_SPEED_MPH))
         return cur.fetchone()
 
 
@@ -104,17 +118,27 @@ def build_prompt(report_date, summary_data, system_stats):
 
     stats = system_stats or {}
 
+    first_ride = stats.get("first_ride")
+    last_ride = stats.get("last_ride")
+    window_line = ""
+    if first_ride and last_ride:
+        window_line = (
+            f"- Service window (first to last moving bus): "
+            f"{first_ride.strftime('%H:%M')} – {last_ride.strftime('%H:%M')} ET\n"
+        )
+
     prompt = f"""You are a transit data analyst writing a daily reliability report for the
 Erie Metropolitan Transit Authority (EMTA) in Erie, PA.
 
-The report date is for yesterday: {report_date.strftime('%A, %B %d, %Y')}.
+The report date is: {report_date.strftime('%A, %B %d, %Y')}.
 
-Here is the system-wide performance for this specific date:
+Here is the system-wide performance for this specific date (moving buses only):
 - Total vehicle pings tracked: {stats.get('total_pings', 'N/A')}
 - Active routes: {stats.get('routes', 'N/A')}
 - System-wide on-time percentage: {stats.get('system_on_time_pct', 'N/A')}%
 - Average delay: {stats.get('avg_delay', 'N/A')} minutes
 - Very late incidents (>15 min): {stats.get('very_late_count', 'N/A')}
+{window_line}
 
 Here are the worst-performing routes from that day (sorted by worst On-Time Percentage):
 
@@ -169,11 +193,14 @@ def parse_response(text):
     return narrative, tweet, headline
 
 
-def generate_daily_insights(target_date: date):
-    """Fetch data, call Claude, store daily results."""
+def generate_daily_insights(target_date: date) -> str:
+    """Fetch data, call Claude, store daily results.
+
+    Returns one of: "generated", "exists", "no_data", "missing_env".
+    """
     if not SUPABASE_DB_URL or not ANTHROPIC_API_KEY:
         log.error("Missing SUPABASE_DB_URL or ANTHROPIC_API_KEY environment variables.")
-        return
+        return "missing_env"
 
     conn = psycopg2.connect(SUPABASE_DB_URL, connect_timeout=10)
 
@@ -181,13 +208,13 @@ def generate_daily_insights(target_date: date):
         # Guard: don't run more than once per day
         if already_generated(conn, target_date):
             log.info("Insights for date %s already exist. Skipping.", target_date)
-            return
+            return "exists"
 
         # Fetch data
         summary_data = fetch_daily_summary(conn, target_date)
         if not summary_data:
             log.info("No silver_arrivals data available for %s. Cannot generate insights.", target_date)
-            return
+            return "no_data"
 
         system_stats = fetch_system_stats(conn, target_date)
         prompt = build_prompt(target_date, summary_data, system_stats)
@@ -219,6 +246,7 @@ def generate_daily_insights(target_date: date):
             )
         conn.commit()
         log.info("Successfully stored daily insights for %s", target_date)
+        return "generated"
     except Exception:
         conn.rollback()
         log.exception("Failed to store daily insights")

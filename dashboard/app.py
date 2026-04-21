@@ -51,15 +51,30 @@ def get_conn():
     return psycopg2.connect(os.environ["SUPABASE_DB_URL"], connect_timeout=10)
 
 
-def run_query(sql, params=None, ttl=3600):
-    """Run a read query and return list of dicts. Wrapped for error handling."""
+@st.cache_data(ttl=3600)
+def _run_query_cached(sql: str, params: tuple) -> list[dict]:
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+
+
+@st.cache_data(ttl=60)
+def _run_live_query_cached(sql: str, params: tuple) -> list[dict]:
+    conn = get_conn()
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def run_query(sql: str, params=None, live: bool = False) -> list[dict]:
+    """Cached DB read. Use live=True for bronze (60 s TTL), default is 3600 s."""
     try:
-        conn = get_conn()
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params or ())
-            return cur.fetchall()
+        p = tuple(params or [])
+        if live:
+            return _run_live_query_cached(sql, p)
+        return _run_query_cached(sql, p)
     except Exception:
-        # Reset the cached connection on failure
         get_conn.clear()
         st.error("Could not load data. Check connection.")
         return []
@@ -100,7 +115,7 @@ elif direction_choice == "Outbound":
 st.sidebar.markdown("---")
 st.sidebar.caption("Data sourced from EMTA Avail API")
 st.sidebar.caption("Updated every 5 minutes")
-st.sidebar.caption("Built by Hugo · [GitHub](https://github.com/hugorabbit)")
+st.sidebar.caption("Built by Vladimir · [GitHub](https://github.com/VladimirMickic/Public_Transport)")
 
 
 # ── Title ────────────────────────────────────────────────
@@ -375,7 +390,7 @@ with tab_map:
               AND latitude IS NOT NULL
               AND longitude IS NOT NULL
         """
-        live = run_query(live_sql)
+        live = run_query(live_sql, live=True)
 
         if live:
             fig_map = px.scatter_mapbox(
@@ -486,14 +501,94 @@ with tab_digest:
             "after collecting at least a week of data."
         )
 
+    st.markdown("---")
+    st.subheader("📅 AI Daily Digest")
+    st.caption("Metrics exclude pings where the bus is parked (speed ≤ 2 mph).")
+
+    # ── Pick a date and fetch/generate its digest ────────
+    picker_max = date.today() - timedelta(days=1)
+    picker_min = picker_max - timedelta(days=60)
+    selected_day = st.date_input(
+        "Pick a date",
+        value=picker_max,
+        min_value=picker_min,
+        max_value=picker_max,
+        key="daily_digest_date",
+    )
+
+    existing = run_query(
+        "SELECT report_date, narrative, tweet_draft, headline_text, created_at "
+        "FROM ai_daily_insights WHERE report_date = %s",
+        [selected_day],
+    )
+
+    if existing:
+        ins = existing[0]
+        if ins.get("headline_text"):
+            st.info(f"📰 **{ins['headline_text']}**")
+        st.markdown(ins["narrative"])
+        if ins.get("tweet_draft"):
+            st.markdown("---")
+            st.markdown(f"**🐦 Tweet draft:** {ins['tweet_draft']}")
+        st.caption(f"Generated {ins['created_at']}")
+    else:
+        st.warning(f"No digest yet for {selected_day}.")
+        if st.button("Generate digest", key="generate_daily"):
+            with st.spinner(f"Calling Claude for {selected_day} …"):
+                try:
+                    # Lazy import: anthropic is only needed when generating.
+                    from ai_agent.daily_insights import generate_daily_insights
+                    status = generate_daily_insights(selected_day)
+                    _run_query_cached.clear()
+                    if status == "generated":
+                        st.success("Digest generated.")
+                        st.rerun()
+                    elif status == "exists":
+                        st.info("Digest already existed — reloading.")
+                        st.rerun()
+                    elif status == "no_data":
+                        st.warning(f"No moving-bus data available for {selected_day}.")
+                    elif status == "missing_env":
+                        st.error("Server is missing SUPABASE_DB_URL or ANTHROPIC_API_KEY.")
+                    else:
+                        st.error(f"Unexpected status: {status}")
+                except Exception as exc:
+                    st.error(f"Generation failed: {exc}")
+
+    # ── Recent digests list ──────────────────────────────
+    st.markdown("##### Recent daily digests")
+    recent_sql = """
+        SELECT report_date, narrative, tweet_draft, headline_text, created_at
+        FROM ai_daily_insights
+        ORDER BY report_date DESC
+        LIMIT 30
+    """
+    recent = run_query(recent_sql)
+    if recent:
+        for ins in recent:
+            with st.expander(
+                f"{ins['report_date']} — {ins.get('headline_text', '')}",
+                expanded=False,
+            ):
+                st.markdown(ins["narrative"])
+                if ins.get("tweet_draft"):
+                    st.markdown("---")
+                    st.markdown(f"**🐦 Tweet draft:** {ins['tweet_draft']}")
+                st.caption(f"Generated {ins['created_at']}")
+    else:
+        st.info(
+            "No daily insights generated yet. Pick a date above and click **Generate digest**, "
+            "or run `python -m ai_agent.daily_insights`."
+        )
+
 
 # ── Footer ───────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #888; font-size: 0.85em;'>"
     "Data sourced from EMTA Avail API · Updated every 5 minutes · "
-    "Built by Hugo · "
-    "<a href='https://github.com/hugorabbit' style='color: #888;'>GitHub</a>"
+    "Built by Vladimir · "
+    "<a href='https://github.com/VladimirMickic/Public_Transport' style='color: #888;'>GitHub</a>"
     "</div>",
     unsafe_allow_html=True,
 )
