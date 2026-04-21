@@ -79,7 +79,7 @@ def get_conn():
     return psycopg2.connect(os.environ["SUPABASE_DB_URL"], connect_timeout=10)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def _run_query_cached(sql: str, params: tuple) -> list[dict]:
     conn = get_conn()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -96,7 +96,13 @@ def _run_live_query_cached(sql: str, params: tuple) -> list[dict]:
 
 
 def run_query(sql: str, params=None, live: bool = False) -> list[dict]:
-    """Cached DB read. Use live=True for bronze (60 s TTL), default is 3600 s."""
+    """Cached DB read.
+
+    - Default TTL is 300 s so the dashboard KPIs refresh each time the 5-min
+      ETL cycle lands new rows (the auto-refresh timer fires at the same
+      cadence, so a user leaving the tab open always sees current numbers).
+    - `live=True` drops to 60 s for bronze/live-vehicle queries.
+    """
     try:
         p = tuple(params or [])
         if live:
@@ -119,8 +125,21 @@ date_range = st.sidebar.date_input(
     value=(default_start, default_end),
     max_value=default_end,
 )
-if isinstance(date_range, tuple) and len(date_range) == 2:
-    filter_start, filter_end = date_range
+# Streamlit's date_input returns:
+#   - a (start, end) tuple when the range picker has both handles set,
+#   - a 1-element tuple or a bare `date` mid-selection / when only one day is chosen.
+# Previously we fell back to the 30-day default whenever the length wasn't exactly 2,
+# which made every downstream KPI silently ignore single-day selections. Collapse a
+# one-sided pick to (day, day) so the rest of the page honours it.
+if isinstance(date_range, tuple):
+    if len(date_range) == 2:
+        filter_start, filter_end = date_range
+    elif len(date_range) == 1:
+        filter_start = filter_end = date_range[0]
+    else:
+        filter_start, filter_end = default_start, default_end
+elif isinstance(date_range, date):
+    filter_start = filter_end = date_range
 else:
     filter_start, filter_end = default_start, default_end
 
@@ -172,7 +191,22 @@ tab_overview, tab_route, tab_map, tab_digest = st.tabs(
 with tab_overview:
     st.subheader("System Performance Overview")
 
+    # Human-friendly date caption right under the header. A single-day pick
+    # reads "Apr 21, 2026" (no trailing dash); a range reads "Apr 1 – Apr 21, 2026".
+    if filter_start == filter_end:
+        st.caption(f"📅 {filter_start.strftime('%b %d, %Y')}")
+    else:
+        st.caption(
+            f"📅 {filter_start.strftime('%b %d')} – "
+            f"{filter_end.strftime('%b %d, %Y')}"
+        )
+
     # ── Key metrics from silver (date-filtered) ──────────
+    # The citywide reliability score uses the same symmetric-adherence
+    # formula as the Gold table and the worst-route banner: 100 minus
+    # 10× the average absolute deviation, clamped to [0, 100], computed
+    # only over moving buses (speed > 2). That way every reliability
+    # number on the page — city, route, route×hour — is comparable.
     metrics_sql = f"""
         SELECT
             COUNT(*) AS total_pings,
@@ -181,7 +215,15 @@ with tab_overview:
                 COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
                 / NULLIF(COUNT(*), 0), 1
             ) AS on_time_pct,
-            COUNT(DISTINCT route_id) AS active_routes
+            COUNT(DISTINCT route_id) AS active_routes,
+            GREATEST(0, ROUND(
+                (100 - LEAST(
+                    100,
+                    AVG(ABS(adherence_minutes)) FILTER (
+                        WHERE speed > 2 AND adherence_minutes IS NOT NULL
+                    ) * 10
+                ))::numeric, 1
+            )) AS city_reliability
         FROM silver_arrivals
         WHERE observed_at::date BETWEEN %s AND %s
         {direction_filter_sql}
@@ -190,11 +232,18 @@ with tab_overview:
 
     if metrics and metrics[0]["total_pings"] and metrics[0]["total_pings"] > 0:
         m = metrics[0]
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Total Pings", f"{m['total_pings']:,}")
         c2.metric("On-Time %", f"{m['on_time_pct']}%")
         c3.metric("Avg Delay", f"{m['avg_delay']} min")
         c4.metric("Active Routes", m["active_routes"])
+        c5.metric(
+            "City Reliability",
+            f"{m['city_reliability']}/100" if m["city_reliability"] is not None else "—",
+            help="Citywide reliability score over the selected range. "
+                 "100 minus 10× average |adherence| in minutes, moving buses only. "
+                 "Updates each 5-min ETL cycle.",
+        )
 
         # ── Delay bucket breakdown ───────────────────────
         bucket_sql = f"""
@@ -653,9 +702,11 @@ with tab_map:
                 zoom=11,
                 height=600,
                 title="Today's Activity by Route",
-                # Dark24 is a muted, harmonious palette — easier on the eyes
-                # than the neon Alphabet palette on our dark-themed dashboard.
-                color_discrete_sequence=px.colors.qualitative.Dark24,
+                # Light24 is designed for dark backgrounds — each hue stays
+                # bright and readable against the dark-matter basemap, so
+                # routes that were hard to spot with Dark24 (16, 14, etc.)
+                # now pop off the map.
+                color_discrete_sequence=px.colors.qualitative.Light24,
                 hover_data={"route_label": True, "pings": True, "avg_delay": True,
                             "lat_grid": False, "lon_grid": False},
             )
@@ -797,10 +848,105 @@ with tab_digest:
 
         if kpi and kpi.get("total_pings"):
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("On-Time %", f"{kpi['otp_pct']}%")
-            k2.metric("Avg Delay", f"{kpi['avg_delay']} min")
-            k3.metric("Active Routes", kpi["active_routes"])
-            k4.metric("Very Late", kpi["very_late"])
+            k1.metric(
+                "On-Time %",
+                f"{kpi['otp_pct']}%",
+                help="Share of moving-bus pings within EMTA's on-time window "
+                     "(−1 to +5 min of schedule).",
+            )
+            k2.metric(
+                "Avg Delay",
+                f"{kpi['avg_delay']} min",
+                help="Average signed adherence. Negative = running early, "
+                     "positive = running late.",
+            )
+            k3.metric(
+                "Active Routes",
+                kpi["active_routes"],
+                help="Distinct route IDs that produced at least one moving-bus ping today.",
+            )
+            k4.metric(
+                "Very Late Pings",
+                kpi["very_late"],
+                help="Number of pings where the bus was > 10 minutes behind schedule.",
+            )
+
+        # ── Day-arc hourly OTP chart ────────────────────────
+        # A single-line chart of on-time percentage hour by hour tells the
+        # executive story "when did the day go wrong?" at a glance. Pulled
+        # from silver with the same moving-bus filter used everywhere else.
+        # No new Anthropic tokens.
+        arc_sql = """
+            SELECT hour_of_day,
+                   ROUND(
+                       COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
+                       / NULLIF(COUNT(*), 0), 1
+                   ) AS otp_pct,
+                   COUNT(*) AS pings
+            FROM silver_arrivals
+            WHERE observed_at::date = %s
+              AND speed > 2
+            GROUP BY hour_of_day
+            ORDER BY hour_of_day
+        """
+        arc_rows = run_query(arc_sql, [selected_day])
+        if arc_rows:
+            arc_labels = [f"{int(r['hour_of_day']):02d}" for r in arc_rows]
+            for r, lbl in zip(arc_rows, arc_labels):
+                r["hour_label"] = lbl
+            fig_arc = px.bar(
+                arc_rows,
+                x="hour_label",
+                y="otp_pct",
+                title="Hourly On-Time % — how the day unfolded",
+                labels={"hour_label": "Hour", "otp_pct": "On-Time %"},
+                color="otp_pct",
+                color_continuous_scale="RdYlGn",
+                range_color=[0, 100],
+            )
+            fig_arc.update_layout(
+                **PLOTLY_LAYOUT,
+                bargap=0.15,
+                height=260,
+                yaxis=dict(range=[0, 100]),
+                xaxis=dict(type="category"),
+                coloraxis_showscale=False,
+            )
+            st.plotly_chart(fig_arc, use_container_width=True)
+
+        # ── Top-3 worst routes for the day ──────────────────
+        # Same symmetric reliability formula the Overview/heatmap use, so
+        # the digest, the banner, and the heatmap all agree on "worst".
+        worst_routes_sql = """
+            SELECT route_id, route_name,
+                   GREATEST(0, ROUND(
+                       (100 - LEAST(100, AVG(ABS(adherence_minutes)) * 10))::numeric, 1
+                   )) AS reliability,
+                   ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                   COUNT(*) AS pings
+            FROM silver_arrivals
+            WHERE observed_at::date = %s
+              AND speed > 2
+              AND adherence_minutes IS NOT NULL
+              AND route_name IS NOT NULL
+            GROUP BY route_id, route_name
+            HAVING COUNT(*) >= 20
+            ORDER BY reliability ASC
+            LIMIT 3
+        """
+        worst_routes = run_query(worst_routes_sql, [selected_day])
+        if worst_routes:
+            st.markdown("**⚠️ Top 3 problem routes**")
+            worst_display = [
+                {
+                    "Route": format_route(r["route_id"], r["route_name"]),
+                    "Reliability": f"{r['reliability']}/100",
+                    "Avg Delay (min)": r["avg_delay"],
+                    "Pings": r["pings"],
+                }
+                for r in worst_routes
+            ]
+            st.dataframe(worst_display, use_container_width=True, hide_index=True)
 
         with st.container(border=True):
             st.markdown(ins["narrative"])
