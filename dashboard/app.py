@@ -118,33 +118,42 @@ def run_query(sql: str, params=None, live: bool = False) -> list[dict]:
 st.sidebar.image("https://emta.availtec.com/InfoPoint/Content/images/logo.png", width=180)
 st.sidebar.title("Filters")
 
-default_end = date.today()
-# Landing view shows today only — the live, actionable picture. Users who
-# want context can drag the picker back; the historical window is one click
-# away but shouldn't be the default framing.
-default_start = default_end
-date_range = st.sidebar.date_input(
-    "Date range",
-    value=(default_start, default_end),
-    max_value=default_end,
+today = date.today()
+# Streamlit's range-mode date_input always renders with a trailing "–"
+# even when both handles sit on the same day, which looks broken for a
+# single-day pick. Default to single-date mode; users who want a range
+# tick the checkbox and get a proper Start/End pair.
+compare_range = st.sidebar.checkbox(
+    "Compare a range",
+    value=False,
+    help="On: pick a start and end date. Off: single-day view.",
 )
-# Streamlit's date_input returns:
-#   - a (start, end) tuple when the range picker has both handles set,
-#   - a 1-element tuple or a bare `date` mid-selection / when only one day is chosen.
-# Previously we fell back to the 30-day default whenever the length wasn't exactly 2,
-# which made every downstream KPI silently ignore single-day selections. Collapse a
-# one-sided pick to (day, day) so the rest of the page honours it.
-if isinstance(date_range, tuple):
-    if len(date_range) == 2:
-        filter_start, filter_end = date_range
-    elif len(date_range) == 1:
-        filter_start = filter_end = date_range[0]
-    else:
-        filter_start, filter_end = default_start, default_end
-elif isinstance(date_range, date):
-    filter_start = filter_end = date_range
+if compare_range:
+    range_start = st.sidebar.date_input(
+        "Start date",
+        value=today - timedelta(days=7),
+        max_value=today,
+        key="range_start",
+    )
+    range_end = st.sidebar.date_input(
+        "End date",
+        value=today,
+        max_value=today,
+        key="range_end",
+    )
+    # Normalise regardless of which way the user dragged the handles.
+    filter_start, filter_end = (
+        (range_start, range_end) if range_start <= range_end else (range_end, range_start)
+    )
 else:
-    filter_start, filter_end = default_start, default_end
+    picked = st.sidebar.date_input(
+        "Date",
+        value=today,
+        max_value=today,
+        key="single_date",
+    )
+    # date_input in single mode returns a bare `date`, but belt-and-braces.
+    filter_start = filter_end = picked if isinstance(picked, date) else today
 
 direction_choice = st.sidebar.radio(
     "Direction",
@@ -221,13 +230,13 @@ with tab_overview:
             GREATEST(0, ROUND(
                 (100 - LEAST(
                     100,
-                    AVG(ABS(adherence_minutes)) FILTER (
+                    AVG(LEAST(30, ABS(adherence_minutes))) FILTER (
                         WHERE speed > 2 AND adherence_minutes IS NOT NULL
                     ) * 10
                 ))::numeric, 1
             )) AS city_reliability
         FROM silver_arrivals
-        WHERE observed_at::date BETWEEN %s AND %s
+        WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
         {direction_filter_sql}
     """
     # live=True (60s TTL) so the city KPI strip reflects each 5-min ETL
@@ -251,14 +260,16 @@ with tab_overview:
             f"{m['city_reliability']}/100" if m["city_reliability"] is not None else "—",
             help="Citywide reliability score over the selected range. "
                  "100 minus 10× average |adherence| in minutes, moving buses only. "
-                 "Updates each 5-min ETL cycle.",
+                 "Each ping's |adherence| is clamped at 30 min first, so a handful "
+                 "of buses parked with stale adherence can't drag the whole city "
+                 "score to zero. Updates each 5-min ETL cycle.",
         )
 
         # ── Delay bucket breakdown ───────────────────────
         bucket_sql = f"""
             SELECT delay_bucket, COUNT(*) AS cnt
             FROM silver_arrivals
-            WHERE observed_at::date BETWEEN %s AND %s
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
             {direction_filter_sql}
             GROUP BY delay_bucket
         """
@@ -342,7 +353,7 @@ with tab_overview:
                     SELECT hour_of_day AS bucket_key,
                            {metric_sql}
                     FROM silver_arrivals
-                    WHERE observed_at::date BETWEEN %s AND %s
+                    WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
                     {direction_filter_sql}
                     GROUP BY hour_of_day
                     ORDER BY hour_of_day
@@ -353,11 +364,11 @@ with tab_overview:
                 # hour_of_day by 6 via integer math gives the window index,
                 # then * 6 gets the start hour.
                 trend_sql = f"""
-                    SELECT observed_at::date AS bucket_day,
+                    SELECT (observed_at AT TIME ZONE 'America/New_York')::date AS bucket_day,
                            (hour_of_day / 6) * 6 AS bucket_hour,
                            {metric_sql}
                     FROM silver_arrivals
-                    WHERE observed_at::date BETWEEN %s AND %s
+                    WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
                     {direction_filter_sql}
                     GROUP BY bucket_day, bucket_hour
                     ORDER BY bucket_day, bucket_hour
@@ -365,10 +376,10 @@ with tab_overview:
                 trend_title = f"{pretty_metric} % — 6-hour windows"
             else:
                 trend_sql = f"""
-                    SELECT observed_at::date AS bucket_day,
+                    SELECT (observed_at AT TIME ZONE 'America/New_York')::date AS bucket_day,
                            {metric_sql}
                     FROM silver_arrivals
-                    WHERE observed_at::date BETWEEN %s AND %s
+                    WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
                     {direction_filter_sql}
                     GROUP BY bucket_day
                     ORDER BY bucket_day
@@ -442,16 +453,21 @@ with tab_overview:
         # when multiple routes bottom out at 0/100 the banner names the one
         # that's *actually* the most off schedule, not whichever the planner
         # happened to return first.
+        # Reliability score uses LEAST(30, |adh|) — clamping each ping at
+        # 30 min prevents a handful of buses stranded with stale adherence
+        # (we've seen values up to 345 min) from pinning every rush-hour
+        # route to 0/100. The displayed avg_abs_delay stays *uncapped* so
+        # the operator still sees the true magnitude, not the scoring proxy.
         worst_sql = f"""
             SELECT route_id, route_name, hour_of_day,
                    GREATEST(0, ROUND(
-                       (100 - LEAST(100, AVG(ABS(adherence_minutes)) * 10))::numeric, 2
+                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 2
                    )) AS reliability_score,
                    ROUND(AVG(ABS(adherence_minutes))::numeric, 1) AS avg_abs_delay,
                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_signed_delay,
                    COUNT(*) AS total_pings
             FROM silver_arrivals
-            WHERE observed_at::date BETWEEN %s AND %s
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
               AND hour_of_day IN (7, 8, 16, 17, 18)
               AND speed > 2
               AND adherence_minutes IS NOT NULL
@@ -490,11 +506,11 @@ with tab_overview:
         heat_sql = f"""
             SELECT route_id, route_name, hour_of_day,
                    GREATEST(0, ROUND(
-                       (100 - LEAST(100, AVG(ABS(adherence_minutes)) * 10))::numeric, 2
+                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 2
                    )) AS reliability_score,
                    COUNT(*) AS total_pings
             FROM silver_arrivals
-            WHERE observed_at::date BETWEEN %s AND %s
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
               AND speed > 2
               AND adherence_minutes IS NOT NULL
               AND route_name IS NOT NULL
@@ -555,25 +571,32 @@ with tab_overview:
 with tab_route:
     st.subheader("Route Detail Analysis")
 
-    # Pull the dropdown options from bronze rather than silver. Silver drops
-    # any ping with no schedule data (adherence_minutes IS NULL), which was
-    # hiding low-frequency revenue routes like 1 Glenwood, 11 Harborcreek,
-    # and 15 E 38th whenever Avail didn't publish adherence for them. Bronze
-    # keeps every on-route ping, so any route that's actually carried
-    # passengers in the last 30 days shows up.
+    # Dropdown is sourced from bronze (last 30 days) so every route the
+    # Avail API has actually reported in-service shows up — not just the
+    # ones with adherence data in silver. 98 (AM Tripper), 99 (PM Tripper)
+    # and 999 (dead-head repositioning) are filtered out because they
+    # aren't rider-facing services.
     #
-    # 98/99 (AM/PM Trippers) and 999 (dead-head repositioning) are filtered
-    # out: they aren't rider-facing services, so they don't belong in a
-    # route-picker.
+    # NOTE: we can only surface routes that Avail publishes. EMTA's printed
+    # schedules use some route numbers (e.g. 1 Glenwood, 11 Harborcreek,
+    # 15 E 38th) that never appear in the live API feed. If you're
+    # expecting a route here that isn't listed, it's missing upstream —
+    # see the Avail-feed caption at the top of this tab.
     routes_sql = """
         SELECT DISTINCT route_id, route_name
         FROM bronze_vehicle_pings
-        WHERE is_on_route = TRUE
-          AND route_name IS NOT NULL
+        WHERE route_name IS NOT NULL
           AND route_id NOT IN ('98', '99', '999')
           AND observed_at >= NOW() - INTERVAL '30 days'
     """
     routes = run_query(routes_sql)
+
+    st.caption(
+        "ℹ️ Routes listed here reflect EMTA's live Avail API feed. "
+        "Some numbers on printed rider schedules (e.g. 1 Glenwood, "
+        "11 Harborcreek, 15 E 38th) don't appear in the feed and can't "
+        "be tracked until EMTA publishes them upstream."
+    )
 
     if routes:
         # Sort routes by numeric route_id when possible (so the dropdown
@@ -610,7 +633,7 @@ with tab_route:
                    COUNT(*) AS pings
             FROM silver_arrivals
             WHERE route_id = %s
-              AND observed_at::date BETWEEN %s AND %s
+              AND (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
               {direction_filter_sql}
             GROUP BY hour_of_day
             ORDER BY hour_of_day
@@ -668,7 +691,7 @@ with tab_route:
             SELECT delay_bucket, COUNT(*) AS cnt
             FROM silver_arrivals
             WHERE route_id = %s
-              AND observed_at::date BETWEEN %s AND %s
+              AND (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
               {direction_filter_sql}
             GROUP BY delay_bucket
         """
@@ -688,7 +711,7 @@ with tab_route:
         # ── 10 worst days for this route ─────────────────
         st.markdown("#### 10 Worst Days")
         worst_days_sql = f"""
-            SELECT observed_at::date AS day,
+            SELECT (observed_at AT TIME ZONE 'America/New_York')::date AS day,
                    COUNT(*) AS pings,
                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
                    ROUND(
@@ -698,7 +721,7 @@ with tab_route:
                    COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late_count
             FROM silver_arrivals
             WHERE route_id = %s
-              AND observed_at::date BETWEEN %s AND %s
+              AND (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
               {direction_filter_sql}
             GROUP BY day
             HAVING COUNT(*) >= 3
@@ -789,7 +812,8 @@ with tab_map:
                 COUNT(*) AS pings,
                 ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay
             FROM silver_arrivals
-            WHERE observed_at::date = CURRENT_DATE
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                = (NOW() AT TIME ZONE 'America/New_York')::date
               AND latitude IS NOT NULL
               AND longitude IS NOT NULL
               AND route_name IS NOT NULL
@@ -926,7 +950,7 @@ with tab_digest:
                 COUNT(*) AS total_pings,
                 COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late
             FROM silver_arrivals
-            WHERE observed_at::date = %s
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
               AND speed > 2
         """
         kpi_rows = run_query(kpi_sql, [selected_day])
@@ -994,7 +1018,7 @@ with tab_digest:
                    ) AS otp_pct,
                    COUNT(*) AS pings
             FROM silver_arrivals
-            WHERE observed_at::date = %s
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
               AND speed > 2
             GROUP BY hour_of_day
             ORDER BY hour_of_day
@@ -1030,12 +1054,12 @@ with tab_digest:
         worst_routes_sql = """
             SELECT route_id, route_name,
                    GREATEST(0, ROUND(
-                       (100 - LEAST(100, AVG(ABS(adherence_minutes)) * 10))::numeric, 1
+                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 1
                    )) AS reliability,
                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
                    COUNT(*) AS pings
             FROM silver_arrivals
-            WHERE observed_at::date = %s
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
               AND speed > 2
               AND adherence_minutes IS NOT NULL
               AND route_name IS NOT NULL
