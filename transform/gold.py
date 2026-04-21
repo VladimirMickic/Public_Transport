@@ -43,11 +43,11 @@ UPSERT_GOLD = """
         )                                                           AS on_time_pct,
         ROUND(AVG(adherence_minutes)::numeric, 2)                   AS avg_adherence_minutes,
         -- Reliability score: 70% on-time pct + 30% delay penalty
-        -- Uses |AVG(adherence)| (capped at 15 min) so running ~10 min early
-        -- is penalised like running ~10 min late — both miss the schedule.
+        -- Uses AVG(|adherence|) (capped at 15 min) so chaotic routes where
+        -- early and late trips cancel out can't masquerade as on-schedule.
         ROUND(
             (COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0 / COUNT(*)) * 0.7
-            + (1.0 - LEAST(ABS(AVG(adherence_minutes)), 15) / 15.0) * 100 * 0.3,
+            + (1.0 - LEAST(AVG(ABS(adherence_minutes)), 15) / 15.0) * 100 * 0.3,
             2
         )                                                           AS reliability_score,
         NOW()                                                       AS computed_at
