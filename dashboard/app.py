@@ -186,33 +186,70 @@ with tab_overview:
             )
             fig_bucket.update_layout(**PLOTLY_LAYOUT)
 
-            # ── On-time trend by day ─────────────────────
-            trend_sql = f"""
-                SELECT observed_at::date AS day,
-                       ROUND(
-                           COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
-                           / NULLIF(COUNT(*), 0), 1
-                       ) AS on_time_pct
-                FROM silver_arrivals
-                WHERE observed_at::date BETWEEN %s AND %s
-                {direction_filter_sql}
-                GROUP BY day
-                ORDER BY day
-            """
-            trend = run_query(trend_sql, [filter_start, filter_end] + direction_params)
-
             col_pie, col_trend = st.columns([1, 2])
             with col_pie:
-                st.plotly_chart(fig_bucket, use_container_width=True)
+                # on_select="rerun" lets Plotly's click events drive the
+                # adjacent line chart; selection persists in st.session_state
+                # under this key between reruns.
+                pie_event = st.plotly_chart(
+                    fig_bucket,
+                    use_container_width=True,
+                    on_select="rerun",
+                    selection_mode="points",
+                    key="delay_bucket_pie",
+                )
+                st.caption("Click a slice to switch the trend on the right.")
+
+            selected_bucket = None
+            if pie_event and getattr(pie_event, "selection", None):
+                pts = pie_event.selection.get("points") or []
+                if pts:
+                    selected_bucket = pts[0].get("label")
+
+            if selected_bucket:
+                trend_sql = f"""
+                    SELECT observed_at::date AS day,
+                           ROUND(
+                               COUNT(*) FILTER (WHERE delay_bucket = %s) * 100.0
+                               / NULLIF(COUNT(*), 0), 1
+                           ) AS pct
+                    FROM silver_arrivals
+                    WHERE observed_at::date BETWEEN %s AND %s
+                    {direction_filter_sql}
+                    GROUP BY day
+                    ORDER BY day
+                """
+                trend_params = [selected_bucket, filter_start, filter_end] + direction_params
+                trend_title = f"Daily {selected_bucket.replace('_', ' ').title()} %"
+                line_color = COLORS.get(selected_bucket, "#22c55e")
+            else:
+                trend_sql = f"""
+                    SELECT observed_at::date AS day,
+                           ROUND(
+                               COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
+                               / NULLIF(COUNT(*), 0), 1
+                           ) AS pct
+                    FROM silver_arrivals
+                    WHERE observed_at::date BETWEEN %s AND %s
+                    {direction_filter_sql}
+                    GROUP BY day
+                    ORDER BY day
+                """
+                trend_params = [filter_start, filter_end] + direction_params
+                trend_title = "Daily On-Time %"
+                line_color = COLORS["on_time"]
+
+            trend = run_query(trend_sql, trend_params)
+
             with col_trend:
                 if trend:
                     fig_trend = px.line(
-                        trend, x="day", y="on_time_pct",
-                        title="Daily On-Time %",
-                        labels={"day": "Date", "on_time_pct": "On-Time %"},
+                        trend, x="day", y="pct",
+                        title=trend_title,
+                        labels={"day": "Date", "pct": trend_title.split(" ", 1)[1]},
                     )
                     fig_trend.update_layout(**PLOTLY_LAYOUT)
-                    fig_trend.update_traces(line=dict(color="#22c55e", width=3))
+                    fig_trend.update_traces(line=dict(color=line_color, width=3))
                     st.plotly_chart(fig_trend, use_container_width=True)
 
         # ── Worst peak-hour route callout ────────────────
@@ -385,7 +422,7 @@ with tab_route:
 with tab_map:
     st.subheader("Live Vehicle Map")
 
-    map_mode = st.toggle("Show today's delay heatmap", value=False)
+    map_mode = st.toggle("Show today's activity by route", value=False)
 
     if not map_mode:
         # ── Current vehicles (last 15 min of bronze) ─────
@@ -426,50 +463,57 @@ with tab_map:
             st.info("No live vehicles right now. Buses typically run 6 AM – 10 PM ET on weekdays.")
 
     else:
-        # ── Today's delay heatmap from silver ────────────
-        st.caption("Average delay by location today")
+        # ── Today's route activity map from silver ───────
+        st.caption("Each dot is a grid cell where a route was seen today — "
+                   "color = route, size = ping count, hover = avg delay.")
         heat_sql = """
             SELECT
+                route_name,
                 ROUND(latitude::numeric, 3) AS lat_grid,
                 ROUND(longitude::numeric, 3) AS lon_grid,
-                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
-                COUNT(*) AS pings
+                COUNT(*) AS pings,
+                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay
             FROM silver_arrivals
             WHERE observed_at::date = CURRENT_DATE
               AND latitude IS NOT NULL
               AND longitude IS NOT NULL
-            GROUP BY lat_grid, lon_grid
+              AND route_name IS NOT NULL
+            GROUP BY route_name, lat_grid, lon_grid
             HAVING COUNT(*) >= 2
+            ORDER BY route_name
         """
         heat = run_query(heat_sql)
 
         if heat:
-            # Scatter (not density) so color reflects avg_delay only.
-            # density_mapbox weights a KDE by z, so dense-ping areas look red
-            # even when their delays are low.
             fig_hm = px.scatter_mapbox(
                 heat,
                 lat="lat_grid",
                 lon="lon_grid",
-                color="avg_delay",
+                color="route_name",
                 size="pings",
-                size_max=25,
+                size_max=18,
                 zoom=11,
                 height=600,
-                title="Today's Delay Heatmap (color = avg delay, size = ping count)",
-                color_continuous_scale="RdYlGn_r",
-                range_color=[-5, 15],
-                hover_data={"avg_delay": True, "pings": True,
+                title="Today's Activity by Route",
+                color_discrete_sequence=px.colors.qualitative.Alphabet,
+                hover_data={"route_name": True, "pings": True, "avg_delay": True,
                             "lat_grid": False, "lon_grid": False},
             )
             fig_hm.update_layout(
                 mapbox_style="carto-positron",
                 mapbox_center={"lat": 42.129, "lon": -80.085},
+                legend=dict(
+                    title="Route",
+                    yanchor="top", y=1.0,
+                    xanchor="left", x=1.02,
+                    bgcolor="rgba(255,255,255,0.85)",
+                    font=dict(size=11),
+                ),
                 **PLOTLY_LAYOUT,
             )
             st.plotly_chart(fig_hm, use_container_width=True)
         else:
-            st.info("No data for today's heatmap yet.")
+            st.info("No data for today's route map yet.")
 
 
 # ══════════════════════════════════════════════════════════
