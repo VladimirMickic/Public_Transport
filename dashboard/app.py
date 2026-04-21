@@ -297,47 +297,97 @@ with tab_overview:
                     st.plotly_chart(fig_trend, use_container_width=True)
 
         # ── Worst peak-hour route callout ────────────────
-        # Higher threshold + non-zero score filter so tiny/edge slots
-        # (e.g. a chartered "AM Tripper" with 1 bad trip) don't
-        # masquerade as the worst route on the system.
-        worst_sql = """
-            SELECT route_id, route_name, hour_of_day, reliability_score
-            FROM gold_route_reliability
-            WHERE hour_of_day IN (7, 8, 16, 17, 18)
-              AND total_pings >= 50
-              AND reliability_score IS NOT NULL
-              AND reliability_score > 0
+        # Query silver directly (not the lifetime-aggregated gold table) so
+        # the banner reflects the active date range AND refreshes each 5-min
+        # ETL cycle. Formula mirrors the gold reliability score: symmetric
+        # adherence penalty (10 points per minute of |lateness or earliness|,
+        # capped at 100). Only moving buses (speed > 2) count, matching the
+        # rest of the dashboard's convention.
+        worst_sql = f"""
+            SELECT route_id, route_name, hour_of_day,
+                   GREATEST(0, ROUND(
+                       (100 - LEAST(100, AVG(ABS(adherence_minutes)) * 10))::numeric, 2
+                   )) AS reliability_score,
+                   COUNT(*) AS total_pings
+            FROM silver_arrivals
+            WHERE observed_at::date BETWEEN %s AND %s
+              AND hour_of_day IN (7, 8, 16, 17, 18)
+              AND speed > 2
+              AND adherence_minutes IS NOT NULL
+              {direction_filter_sql}
+            GROUP BY route_id, route_name, hour_of_day
+            HAVING COUNT(*) >= 30
             ORDER BY reliability_score ASC
             LIMIT 1
         """
-        worst = run_query(worst_sql)
+        worst = run_query(
+            worst_sql,
+            [filter_start, filter_end] + direction_params,
+            live=True,
+        )
         if worst:
             w = worst[0]
             hour_label = f"{w['hour_of_day']}:00"
             route_label = format_route(w["route_id"], w["route_name"])
             st.warning(
-                f"⚠️ **Worst peak-hour route:** {route_label} at {hour_label} "
+                f"⚠️ **Worst peak-hour route** (in selected range): "
+                f"{route_label} at {hour_label} "
                 f"— reliability score **{w['reliability_score']}**/100"
             )
 
         # ── Route reliability heatmap ────────────────────
-        heat_sql = """
-            SELECT route_id, route_name, hour_of_day, reliability_score
-            FROM gold_route_reliability
-            WHERE total_pings >= 3
+        # Compute reliability per route×hour from silver within the active
+        # date range (rather than reading the lifetime gold table) so every
+        # route that ran any service in the window shows up — including
+        # low-volume shuttles and trippers that gold previously filtered out.
+        # Formula matches the worst-route banner above.
+        heat_sql = f"""
+            SELECT route_id, route_name, hour_of_day,
+                   GREATEST(0, ROUND(
+                       (100 - LEAST(100, AVG(ABS(adherence_minutes)) * 10))::numeric, 2
+                   )) AS reliability_score,
+                   COUNT(*) AS total_pings
+            FROM silver_arrivals
+            WHERE observed_at::date BETWEEN %s AND %s
+              AND speed > 2
+              AND adherence_minutes IS NOT NULL
+              AND route_name IS NOT NULL
+              {direction_filter_sql}
+            GROUP BY route_id, route_name, hour_of_day
+            HAVING COUNT(*) >= 2
             ORDER BY route_id, hour_of_day
         """
-        heat_data = run_query(heat_sql)
+        heat_data = run_query(
+            heat_sql,
+            [filter_start, filter_end] + direction_params,
+            live=True,
+        )
         if heat_data:
             import pandas as pd
             df_heat = pd.DataFrame(heat_data)
             df_heat["route_label"] = df_heat.apply(
                 lambda r: format_route(r["route_id"], r["route_name"]), axis=1
             )
+            # Sort route_label rows by numeric route_id where possible,
+            # else alphabetically. Without this, pandas sorts by string and
+            # puts "105" before "3" on the Y-axis.
+            def _route_sort_key(rid):
+                rid_s = "" if rid is None else str(rid).strip()
+                try:
+                    return (0, int(rid_s), rid_s)
+                except (TypeError, ValueError):
+                    return (1, 0, rid_s.lower())
+            route_order = [
+                r["route_label"] for r in sorted(
+                    df_heat[["route_id", "route_label"]]
+                        .drop_duplicates().to_dict("records"),
+                    key=lambda r: _route_sort_key(r["route_id"]),
+                )
+            ]
             pivot = df_heat.pivot_table(
                 index="route_label", columns="hour_of_day",
                 values="reliability_score", aggfunc="mean"
-            )
+            ).reindex(route_order)
             fig_heat = px.imshow(
                 pivot,
                 color_continuous_scale="RdYlGn",
@@ -363,11 +413,22 @@ with tab_route:
         SELECT DISTINCT route_id, route_name
         FROM silver_arrivals
         WHERE route_name IS NOT NULL
-        ORDER BY route_name
     """
     routes = run_query(routes_sql)
 
     if routes:
+        # Sort routes by numeric route_id when possible (so the dropdown
+        # reads 3, 5, 14, 105 instead of 105, 14, 3 like a string sort
+        # would produce). Non-numeric IDs (e.g. "PM Tripper") fall to the
+        # end, alphabetised among themselves.
+        def _route_sort_key(r):
+            rid = "" if r.get("route_id") is None else str(r["route_id"]).strip()
+            try:
+                return (0, int(rid), rid)
+            except (TypeError, ValueError):
+                return (1, 0, rid.lower())
+        routes = sorted(routes, key=_route_sort_key)
+
         # Label routes as "<bus#> — <name>" so locals can pick them by
         # number (which is how EMTA signage + riders refer to them).
         route_options = {
@@ -537,8 +598,19 @@ with tab_map:
                 title="Live EMTA Vehicles",
             )
             fig_map.update_layout(
-                mapbox_style="carto-positron",
+                # Both map views (live + today's activity) share the same
+                # darkish-gray basemap so switching the toggle doesn't flash
+                # between a light page and a near-black page. Dark-matter is
+                # the darkest neutral Plotly provides without a Mapbox token.
+                mapbox_style="carto-darkmatter",
                 mapbox_center={"lat": 42.129, "lon": -80.085},
+                legend=dict(
+                    title=dict(text="Status", font=dict(color="#e5e7eb")),
+                    bgcolor="rgba(24, 26, 32, 0.85)",
+                    bordercolor="rgba(120, 120, 130, 0.5)",
+                    borderwidth=1,
+                    font=dict(size=11, color="#e5e7eb"),
+                ),
                 **PLOTLY_LAYOUT,
             )
             st.plotly_chart(fig_map, use_container_width=True)
