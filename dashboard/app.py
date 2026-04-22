@@ -751,8 +751,12 @@ with tab_map:
 
     if not map_mode:
         # ── Current vehicles (last 15 min of bronze) ─────
-        st.caption("Showing vehicles from the last 15 minutes")
-        live_sql = """
+        st.caption(
+            "Showing vehicles from the last 15 minutes. "
+            "The sidebar date picker does not apply here — this view is always live. "
+            "The Direction filter does apply."
+        )
+        live_sql = f"""
             SELECT vehicle_id, route_id, route_name, latitude, longitude,
                    adherence_minutes, display_status, speed, vehicle_name,
                    observed_at
@@ -761,8 +765,9 @@ with tab_map:
               AND latitude IS NOT NULL
               AND longitude IS NOT NULL
               AND route_id NOT IN ('98', '99', '999')
+              {direction_filter_sql}
         """
-        live = run_query(live_sql, live=True)
+        live = run_query(live_sql, direction_params, live=True)
 
         if live:
             for v in live:
@@ -839,7 +844,7 @@ with tab_map:
             f"Each dot is a grid cell where a route was seen ({activity_caption_date}) — "
             "color = route, size = ping count, hover = avg delay."
         )
-        heat_sql = """
+        heat_sql = f"""
             SELECT
                 route_id,
                 route_name,
@@ -854,11 +859,12 @@ with tab_map:
               AND longitude IS NOT NULL
               AND route_name IS NOT NULL
               AND route_id NOT IN ('98', '99', '999')
+              {direction_filter_sql}
             GROUP BY route_id, route_name, lat_grid, lon_grid
             HAVING COUNT(*) >= 2
             ORDER BY route_id
         """
-        heat = run_query(heat_sql, [filter_start, filter_end])
+        heat = run_query(heat_sql, [filter_start, filter_end] + direction_params)
 
         if heat:
             for r in heat:
