@@ -22,7 +22,6 @@ import psycopg2.extras
 from dotenv import load_dotenv
 
 ET = ZoneInfo("America/New_York")
-MANUAL_DAILY_CAP = 5
 
 load_dotenv()
 
@@ -225,12 +224,11 @@ def generate_daily_insights(target_date: date, manual: bool = True) -> str:
     Rules:
     - Historical date (< today ET): cache-first. If a row exists, return "exists".
     - Today (ET): always produce a fresh snapshot using all data so far.
-        * manual=True: capped at MANUAL_DAILY_CAP regenerations/day. Each successful
-          regeneration increments generation_count. Returns "rate_limited" when cap hit.
-        * manual=False (cron / auto): always regenerates, does NOT increment counter.
+        * manual=True: regenerates and increments generation_count (audit trail).
+        * manual=False (cron / auto): regenerates, does NOT increment counter.
 
     Returns one of:
-        "generated", "regenerated", "exists", "rate_limited", "no_data", "missing_env".
+        "generated", "regenerated", "exists", "no_data", "missing_env".
     """
     if not SUPABASE_DB_URL or not ANTHROPIC_API_KEY:
         log.error("Missing SUPABASE_DB_URL or ANTHROPIC_API_KEY environment variables.")
@@ -245,13 +243,6 @@ def generate_daily_insights(target_date: date, manual: bool = True) -> str:
         if existing and not is_today:
             log.info("Insights for historical date %s already exist. Cache hit.", target_date)
             return "exists"
-
-        if existing and is_today and manual and existing[1] >= MANUAL_DAILY_CAP:
-            log.info(
-                "Manual regeneration cap reached for %s (%d/%d).",
-                target_date, existing[1], MANUAL_DAILY_CAP,
-            )
-            return "rate_limited"
 
         # Fetch data
         summary_data = fetch_daily_summary(conn, target_date)
