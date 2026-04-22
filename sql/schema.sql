@@ -99,3 +99,8 @@ CREATE TABLE IF NOT EXISTS ai_daily_insights (
     headline_text   TEXT,                    -- ≤100 char headline
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Manual-regeneration counter for same-day "live" digests (capped at 5/day).
+-- Cron-driven auto runs do not increment this counter.
+ALTER TABLE ai_daily_insights
+    ADD COLUMN IF NOT EXISTS generation_count INT NOT NULL DEFAULT 1;

@@ -1,0 +1,44 @@
+name: AI Daily Insights
+
+# Runs the end-of-day daily digest for today (ET).
+#
+# Cron fires at 03:50 UTC every day:
+#   - EDT (Mar–Nov, UTC-4): 23:50 ET  — exactly the 11:50 PM snapshot we want
+#   - EST (Nov–Mar, UTC-5): 22:50 ET  — 1hr DST drift, still today's ET date
+#
+# The --auto flag targets today (ET) automatically, bypasses the 5/day manual
+# regeneration cap, and UPDATEs the existing row in place without incrementing
+# the counter (so cron does not steal user budget).
+on:
+  schedule:
+    - cron: '50 3 * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  daily-report:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Generate Daily Insights (auto, today ET)
+      env:
+        SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: |
+        python3 -m ai_agent.daily_insights --auto

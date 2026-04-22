@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 # Make the project root importable when Streamlit launches this file directly
@@ -956,7 +957,9 @@ with tab_digest:
     st.caption("Metrics exclude pings where the bus is parked (speed ≤ 2 mph).")
 
     # ── Pick a date and fetch/generate its digest ────────
-    picker_max = date.today() - timedelta(days=1)
+    # Use ET (not UTC / server-local) so "today" flips at midnight in Erie.
+    today_et_date = datetime.now(ZoneInfo("America/New_York")).date()
+    picker_max = today_et_date
     picker_min = picker_max - timedelta(days=60)
     selected_day = st.date_input(
         "Pick a date",
@@ -965,9 +968,11 @@ with tab_digest:
         max_value=picker_max,
         key="daily_digest_date",
     )
+    is_today = selected_day == today_et_date
 
     existing = run_query(
-        "SELECT report_date, narrative, tweet_draft, headline_text, created_at "
+        "SELECT report_date, narrative, tweet_draft, headline_text, created_at, "
+        "generation_count "
         "FROM ai_daily_insights WHERE report_date = %s",
         [selected_day],
     )
@@ -1129,21 +1134,64 @@ with tab_digest:
         with st.container(border=True):
             st.markdown(ins["narrative"])
         st.caption(f"Generated {ins['created_at']}")
+
+        # Allow regenerating today's digest up to MANUAL_DAILY_CAP (5) times per day
+        # so the partial-day snapshot stays current as more service data lands.
+        if is_today:
+            from ai_agent.daily_insights import MANUAL_DAILY_CAP
+
+            count = ins.get("generation_count") or 1
+            remaining = max(0, MANUAL_DAILY_CAP - count)
+            if remaining > 0:
+                if st.button(
+                    f"Regenerate with latest data ({remaining} left today)",
+                    key="regenerate_daily",
+                ):
+                    with st.spinner(f"Calling Claude for {selected_day} …"):
+                        try:
+                            from ai_agent.daily_insights import generate_daily_insights
+                            status = generate_daily_insights(selected_day)
+                            _run_query_cached.clear()
+                            if status == "regenerated":
+                                st.success("Digest regenerated with latest data.")
+                                st.rerun()
+                            elif status == "rate_limited":
+                                st.warning(
+                                    f"Daily regeneration limit reached ({MANUAL_DAILY_CAP}/{MANUAL_DAILY_CAP}). "
+                                    "Try again tomorrow or wait for the 11:50 PM auto-snapshot."
+                                )
+                            elif status == "no_data":
+                                st.warning(f"No moving-bus data available for {selected_day}.")
+                            elif status == "missing_env":
+                                st.error("Server is missing SUPABASE_DB_URL or ANTHROPIC_API_KEY.")
+                            else:
+                                st.error(f"Unexpected status: {status}")
+                        except Exception as exc:
+                            st.error(f"Regeneration failed: {exc}")
+            else:
+                st.caption(
+                    f"Daily regeneration limit reached ({MANUAL_DAILY_CAP}/{MANUAL_DAILY_CAP}). "
+                    "The 11:50 PM auto-snapshot will overwrite with the end-of-day view."
+                )
     else:
         st.warning(f"No digest yet for {selected_day}.")
         if st.button("Generate digest", key="generate_daily"):
             with st.spinner(f"Calling Claude for {selected_day} …"):
                 try:
                     # Lazy import: anthropic is only needed when generating.
-                    from ai_agent.daily_insights import generate_daily_insights
+                    from ai_agent.daily_insights import generate_daily_insights, MANUAL_DAILY_CAP
                     status = generate_daily_insights(selected_day)
                     _run_query_cached.clear()
-                    if status == "generated":
+                    if status in ("generated", "regenerated"):
                         st.success("Digest generated.")
                         st.rerun()
                     elif status == "exists":
                         st.info("Digest already existed — reloading.")
                         st.rerun()
+                    elif status == "rate_limited":
+                        st.warning(
+                            f"Daily regeneration limit reached ({MANUAL_DAILY_CAP}/{MANUAL_DAILY_CAP})."
+                        )
                     elif status == "no_data":
                         st.warning(f"No moving-bus data available for {selected_day}.")
                     elif status == "missing_env":
