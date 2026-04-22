@@ -182,6 +182,33 @@ if direction_choice != "All":
     )
 
 st.sidebar.markdown("---")
+with st.sidebar.expander("🧹 Maintenance", expanded=False):
+    st.caption(
+        "Free-plan Supabase only retains 7 days of raw pings. AI digests and "
+        "gold aggregates are always preserved."
+    )
+    prune_days = st.number_input(
+        "Retention window (days)", min_value=1, max_value=60,
+        value=7, step=1, key="prune_days",
+    )
+    prune_dry = st.checkbox("Dry run (count only)", value=True, key="prune_dry")
+    if st.button("Prune old bronze + silver", key="prune_btn"):
+        try:
+            from maintenance.prune_old_data import prune_old_data
+            result = prune_old_data(days=int(prune_days), dry_run=prune_dry)
+            verb = "would delete" if result["dry_run"] else "deleted"
+            st.success(
+                f"{verb.capitalize()} {result['bronze_deleted']:,} bronze · "
+                f"{result['silver_deleted']:,} silver rows older than "
+                f"{result['retention_days']} days."
+            )
+            if not result["dry_run"]:
+                # Cached queries may now reflect stale counts; flush both caches.
+                _run_query_cached.clear()
+                _run_live_query_cached.clear()
+        except Exception as exc:
+            st.error(f"Prune failed: {exc}")
+
 st.sidebar.caption("Data sourced from EMTA Avail API")
 st.sidebar.caption("Updated every 5 minutes")
 st.sidebar.caption("Built by Vladimir · [GitHub](https://github.com/VladimirMickic/Public_Transport)")
@@ -708,9 +735,13 @@ with tab_route:
             fig_rb.update_layout(**PLOTLY_LAYOUT)
             st.plotly_chart(fig_rb, use_container_width=True)
 
-        # ── 10 worst days for this route ─────────────────
-        st.markdown("#### 10 Worst Days")
-        worst_days_sql = f"""
+        # ── 3 worst days for this route ──────────────────
+        # Always scans the last 7 days regardless of the sidebar date filter,
+        # so a single-day selection doesn't collapse this into 1 row. On a
+        # free Supabase plan we only retain ~7 days of silver anyway, so this
+        # query naturally maps to "all available history for this route".
+        st.markdown("#### 3 Worst Days (last 7 days)")
+        worst_days_sql = """
             SELECT (observed_at AT TIME ZONE 'America/New_York')::date AS day,
                    COUNT(*) AS pings,
                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
@@ -721,17 +752,14 @@ with tab_route:
                    COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late_count
             FROM silver_arrivals
             WHERE route_id = %s
-              AND (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
-              {direction_filter_sql}
+              AND (observed_at AT TIME ZONE 'America/New_York')::date
+                  >= (NOW() AT TIME ZONE 'America/New_York')::date - INTERVAL '7 days'
             GROUP BY day
             HAVING COUNT(*) >= 3
             ORDER BY on_time_pct ASC
-            LIMIT 10
+            LIMIT 3
         """
-        worst_days = run_query(
-            worst_days_sql,
-            [selected_route_id, filter_start, filter_end] + direction_params,
-        )
+        worst_days = run_query(worst_days_sql, [selected_route_id])
         if worst_days:
             st.dataframe(worst_days, use_container_width=True)
         else:
@@ -746,34 +774,55 @@ with tab_route:
 with tab_map:
     st.subheader("Live Vehicle Map")
 
-    map_mode = st.toggle("Show today's activity by route", value=False)
+    map_mode = st.toggle("Show activity by route (uses sidebar date filter)", value=False)
 
     if not map_mode:
         # ── Current vehicles (last 15 min of bronze) ─────
         st.caption("Showing vehicles from the last 15 minutes")
         live_sql = """
             SELECT vehicle_id, route_id, route_name, latitude, longitude,
-                   adherence_minutes, display_status, speed, vehicle_name
+                   adherence_minutes, display_status, speed, vehicle_name,
+                   observed_at
             FROM bronze_vehicle_pings
             WHERE observed_at >= NOW() - INTERVAL '15 minutes'
               AND latitude IS NOT NULL
               AND longitude IS NOT NULL
+              AND route_id NOT IN ('98', '99', '999')
         """
         live = run_query(live_sql, live=True)
 
         if live:
             for v in live:
                 v["route_label"] = format_route(v.get("route_id"), v.get("route_name"))
+                # Derive a clean status bucket from adherence so "Very Late"
+                # gets its own red dot. Avail's DisplayStatus only emits
+                # "On Time" / "Early" / "Late", which collapses the worst
+                # delays into the same amber as a 6-min late bus.
+                adh = v.get("adherence_minutes")
+                if adh is None:
+                    v["status_bucket"] = "Unknown"
+                elif adh < -1:
+                    v["status_bucket"] = "Early"
+                elif adh <= 5:
+                    v["status_bucket"] = "On Time"
+                elif adh <= 15:
+                    v["status_bucket"] = "Late"
+                else:
+                    v["status_bucket"] = "Very Late"
             fig_map = px.scatter_mapbox(
                 live,
                 lat="latitude",
                 lon="longitude",
                 hover_name="route_label",
                 hover_data=["vehicle_name", "adherence_minutes", "display_status", "speed"],
-                color="display_status",
+                color="status_bucket",
+                category_orders={"status_bucket": ["On Time", "Early", "Late", "Very Late", "Unknown"]},
                 color_discrete_map={
-                    "On Time": "#22c55e", "Early": "#3b82f6",
-                    "Late": "#f59e0b", "LATE": "#f59e0b",
+                    "On Time": "#22c55e",
+                    "Early": "#3b82f6",
+                    "Late": "#f59e0b",
+                    "Very Late": "#ef4444",
+                    "Unknown": "#6b7280",
                 },
                 zoom=11,
                 height=600,
@@ -796,13 +845,27 @@ with tab_map:
                 **PLOTLY_LAYOUT,
             )
             st.plotly_chart(fig_map, use_container_width=True)
+            latest = max((v["observed_at"] for v in live if v.get("observed_at")), default=None)
+            if latest is not None:
+                latest_et = latest.astimezone().strftime("%H:%M:%S")
+                st.caption(f"🕑 Most recent ping: {latest_et} · {len(live)} vehicles shown")
         else:
             st.info("No live vehicles right now. Buses typically run 6 AM – 10 PM ET on weekdays.")
 
     else:
-        # ── Today's route activity map from silver ───────
-        st.caption("Each dot is a grid cell where a route was seen today — "
-                   "color = route, size = ping count, hover = avg delay.")
+        # ── Route activity map from silver — honours sidebar date filter ──
+        if filter_start == filter_end:
+            activity_caption_date = filter_start.strftime("%b %d, %Y")
+            activity_title = f"Activity by Route — {activity_caption_date}"
+        else:
+            activity_caption_date = (
+                f"{filter_start.strftime('%b %d')} – {filter_end.strftime('%b %d, %Y')}"
+            )
+            activity_title = f"Activity by Route — {activity_caption_date}"
+        st.caption(
+            f"Each dot is a grid cell where a route was seen ({activity_caption_date}) — "
+            "color = route, size = ping count, hover = avg delay."
+        )
         heat_sql = """
             SELECT
                 route_id,
@@ -813,15 +876,16 @@ with tab_map:
                 ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay
             FROM silver_arrivals
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date
-                = (NOW() AT TIME ZONE 'America/New_York')::date
+                  BETWEEN %s AND %s
               AND latitude IS NOT NULL
               AND longitude IS NOT NULL
               AND route_name IS NOT NULL
+              AND route_id NOT IN ('98', '99', '999')
             GROUP BY route_id, route_name, lat_grid, lon_grid
             HAVING COUNT(*) >= 2
             ORDER BY route_id
         """
-        heat = run_query(heat_sql)
+        heat = run_query(heat_sql, [filter_start, filter_end])
 
         if heat:
             for r in heat:
@@ -835,7 +899,7 @@ with tab_map:
                 size_max=18,
                 zoom=11,
                 height=600,
-                title="Today's Activity by Route",
+                title=activity_title,
                 # Light24 is designed for dark backgrounds — each hue stays
                 # bright and readable against the dark-matter basemap, so
                 # routes that were hard to spot with Dark24 (16, 14, etc.)
@@ -860,7 +924,7 @@ with tab_map:
             )
             st.plotly_chart(fig_hm, use_container_width=True)
         else:
-            st.info("No data for today's route map yet.")
+            st.info(f"No activity data for {activity_caption_date}.")
 
 
 # ══════════════════════════════════════════════════════════

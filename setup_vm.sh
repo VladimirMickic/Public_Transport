@@ -42,14 +42,30 @@ echo ".env written."
 echo "=== 5. Setting up crontab ==="
 PYTHON="$PROJECT_DIR/venv/bin/python"
 LOG="$HOME/pipeline.log"
+PRUNE_LOG="$HOME/prune.log"
 
+# Every 5 min — ETL pipeline (bronze → silver → gold)
 CRON_LINE="*/5 * * * * cd $PROJECT_DIR && $PYTHON -m ingestion.fetch_realtime >> $LOG 2>&1 && $PYTHON -m transform.silver --days-back 1 >> $LOG 2>&1 && $PYTHON -m transform.gold >> $LOG 2>&1"
 
-(crontab -l 2>/dev/null | grep -v "fetch_realtime"; echo "$CRON_LINE") | crontab -
+# Daily at 03:15 local time — prune bronze/silver older than 7 days.
+# Runs during the overnight quiet window so it doesn't race the 5-min ETL.
+# Gold aggregates and AI insight tables are never touched by this job.
+PRUNE_LINE="15 3 * * * cd $PROJECT_DIR && $PYTHON -m maintenance.prune_old_data --days 7 >> $PRUNE_LOG 2>&1"
+
+# Strip previous EMTA-related entries (idempotent re-runs of setup_vm.sh)
+# before re-adding the current lines.
+(crontab -l 2>/dev/null \
+    | grep -v "fetch_realtime" \
+    | grep -v "maintenance.prune_old_data"; \
+ echo "$CRON_LINE"; \
+ echo "$PRUNE_LINE") | crontab -
+
 echo "Crontab installed:"
 crontab -l
 
 echo ""
 echo "=== Setup complete! ==="
 echo "Pipeline runs every 5 minutes. Logs at: $LOG"
+echo "Prune runs daily at 03:15 local. Logs at: $PRUNE_LOG"
 echo "To test manually: cd $PROJECT_DIR && source venv/bin/activate && python -m ingestion.fetch_realtime"
+echo "To dry-run the prune: cd $PROJECT_DIR && source venv/bin/activate && python -m maintenance.prune_old_data --dry-run"
