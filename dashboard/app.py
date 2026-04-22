@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 # Make the project root importable when Streamlit launches this file directly
@@ -182,33 +182,6 @@ if direction_choice != "All":
     )
 
 st.sidebar.markdown("---")
-with st.sidebar.expander("🧹 Maintenance", expanded=False):
-    st.caption(
-        "Free-plan Supabase only retains 7 days of raw pings. AI digests and "
-        "gold aggregates are always preserved."
-    )
-    prune_days = st.number_input(
-        "Retention window (days)", min_value=1, max_value=60,
-        value=7, step=1, key="prune_days",
-    )
-    prune_dry = st.checkbox("Dry run (count only)", value=True, key="prune_dry")
-    if st.button("Prune old bronze + silver", key="prune_btn"):
-        try:
-            from maintenance.prune_old_data import prune_old_data
-            result = prune_old_data(days=int(prune_days), dry_run=prune_dry)
-            verb = "would delete" if result["dry_run"] else "deleted"
-            st.success(
-                f"{verb.capitalize()} {result['bronze_deleted']:,} bronze · "
-                f"{result['silver_deleted']:,} silver rows older than "
-                f"{result['retention_days']} days."
-            )
-            if not result["dry_run"]:
-                # Cached queries may now reflect stale counts; flush both caches.
-                _run_query_cached.clear()
-                _run_live_query_cached.clear()
-        except Exception as exc:
-            st.error(f"Prune failed: {exc}")
-
 st.sidebar.caption("Data sourced from EMTA Avail API")
 st.sidebar.caption("Updated every 5 minutes")
 st.sidebar.caption("Built by Vladimir · [GitHub](https://github.com/VladimirMickic/Public_Transport)")
