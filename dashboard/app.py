@@ -689,8 +689,7 @@ with tab_route:
                     hourly, x="hour_label", y="on_time_pct",
                     title=f"{selected_route_name} — On-Time % by Hour",
                     labels={"hour_label": "Hour", "on_time_pct": "On-Time %"},
-                    color="on_time_pct",
-                    color_continuous_scale="Blues",
+                    color_discrete_sequence=["#22c55e"],
                     category_orders={"hour_label": hour_order},
                 )
                 fig_h.update_layout(
@@ -698,6 +697,7 @@ with tab_route:
                     bargap=0.15,
                     yaxis=dict(range=[0, 100]),
                     xaxis=dict(type="category"),
+                    showlegend=False,
                 )
                 st.plotly_chart(fig_h, use_container_width=True)
 
