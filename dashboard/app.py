@@ -487,11 +487,16 @@ with tab_overview:
         # (we've seen values up to 345 min) from pinning every rush-hour
         # route to 0/100. The displayed avg_abs_delay stays *uncapped* so
         # the operator still sees the true magnitude, not the scoring proxy.
+        # Compute the current ET hour — used to exclude hours that haven't
+        # happened yet when the user is viewing today as a single-day filter.
+        _now_et_hour = datetime.now(ZoneInfo("America/New_York")).hour
+        _is_single_today = (filter_start == filter_end == today)
+        _hour_cap_sql = (
+            f"AND hour_of_day <= {_now_et_hour}" if _is_single_today else ""
+        )
+
         worst_sql = f"""
             SELECT route_id, route_name, hour_of_day,
-                   GREATEST(0, ROUND(
-                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 2
-                   )) AS reliability_score,
                    ROUND(AVG(ABS(adherence_minutes))::numeric, 1) AS avg_abs_delay,
                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_signed_delay,
                    COUNT(*) AS total_pings
@@ -501,10 +506,11 @@ with tab_overview:
               AND speed > 2
               AND adherence_minutes IS NOT NULL
               AND route_id NOT IN ('98', '99', '999')
+              {_hour_cap_sql}
               {direction_filter_sql}
             GROUP BY route_id, route_name, hour_of_day
             HAVING COUNT(*) >= 100
-            ORDER BY reliability_score ASC, avg_abs_delay DESC
+            ORDER BY AVG(ABS(adherence_minutes)) DESC
             LIMIT 1
         """
         worst = run_query(
@@ -518,12 +524,23 @@ with tab_overview:
             route_label = format_route(w["route_id"], w["route_name"])
             signed = w["avg_signed_delay"]
             direction_word = "late" if signed is not None and signed >= 0 else "early"
-            st.warning(
-                f"⚠️ **Worst peak-hour route** (in selected range): "
-                f"{route_label} at {hour_label} — reliability "
-                f"**{w['reliability_score']}**/100 "
-                f"· avg {abs(signed) if signed is not None else '—'} min "
-                f"{direction_word} across {w['total_pings']:,} pings"
+            delay_display = f"{abs(float(signed)):.1f}" if signed is not None else "—"
+            st.markdown(
+                f"""<div style="
+                    display:flex; align-items:center; gap:12px;
+                    padding:12px 16px; border-radius:8px;
+                    background:rgba(245,158,11,0.08);
+                    border:1px solid rgba(245,158,11,0.35);
+                    margin:8px 0 16px; font-size:0.92em; color:#e5e7eb;">
+                    <span style="font-size:1.2em;">⚠️</span>
+                    <span>
+                      <b>Worst peak-hour route</b> &nbsp;·&nbsp;
+                      {route_label} at {hour_label}
+                      &nbsp;·&nbsp; avg <b>{delay_display} min</b> {direction_word}
+                      across <b>{w['total_pings']:,}</b> pings
+                    </span>
+                </div>""",
+                unsafe_allow_html=True,
             )
 
         # ── Route reliability heatmap ────────────────────
