@@ -2,8 +2,10 @@ name: AI Weekly Insights
 
 on:
   schedule:
-    # Run at 8:00 AM on Sunday
-    - cron: '0 8 * * 0'
+    # Run Saturday at 03:50 UTC (Saturday 23:50 EDT / 22:50 EST) — after
+    # EMTA's last Saturday bus. EMTA does not operate Sundays, so the
+    # weekly wrap-up for this week lands as soon as service is over.
+    - cron: '50 3 * * 6'
   workflow_dispatch:
 
 env:

@@ -9,6 +9,7 @@ Usage:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import date, timedelta
@@ -60,6 +61,103 @@ def fetch_gold_summary(conn):
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql)
         return cur.fetchall()
+
+
+def _clean_row(d):
+    """Coerce a RealDict row to JSON-serialisable primitives."""
+    out = {}
+    for k, v in d.items():
+        if v is None:
+            out[k] = None
+        elif hasattr(v, "isoformat"):
+            out[k] = v.isoformat()
+        elif hasattr(v, "__float__") and not isinstance(v, (bool,)):
+            out[k] = float(v)
+        else:
+            out[k] = v
+    return out
+
+
+def fetch_weekly_kpi_snapshot(conn, week_start) -> dict:
+    """Build the weekly KPI snapshot persisted alongside the narrative.
+
+    Captures system-wide totals for the week, a daily OTP arc
+    (Mon–Sat; Sunday is excluded since EMTA does not operate), and
+    top-3 worst routes.
+    """
+    week_end = week_start + timedelta(days=6)
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                ROUND(COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
+                      / NULLIF(COUNT(*), 0), 1) AS otp_pct,
+                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                COUNT(DISTINCT route_id)                  AS active_routes,
+                COUNT(*)                                  AS total_pings,
+                COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late
+            FROM silver_arrivals
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                  BETWEEN %s AND %s
+              AND speed > 2
+            """,
+            (week_start, week_end),
+        )
+        kpi = _clean_row(dict(cur.fetchone() or {}))
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                (observed_at AT TIME ZONE 'America/New_York')::date AS day,
+                TO_CHAR((observed_at AT TIME ZONE 'America/New_York')::date, 'Dy') AS day_name,
+                ROUND(COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
+                      / NULLIF(COUNT(*), 0), 1) AS otp_pct,
+                COUNT(*) AS pings
+            FROM silver_arrivals
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                  BETWEEN %s AND %s
+              AND speed > 2
+            GROUP BY day, day_name
+            ORDER BY day
+            """,
+            (week_start, week_end),
+        )
+        daily_arc = [_clean_row(dict(r)) for r in cur.fetchall()]
+
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT route_id, route_name,
+                   GREATEST(0, ROUND(
+                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 1
+                   )) AS reliability,
+                   ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                   COUNT(*) AS pings
+            FROM silver_arrivals
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                  BETWEEN %s AND %s
+              AND speed > 2
+              AND adherence_minutes IS NOT NULL
+              AND route_name IS NOT NULL
+              AND route_id NOT IN ('98', '99', '999')
+            GROUP BY route_id, route_name
+            HAVING COUNT(*) >= 20
+            ORDER BY AVG(ABS(adherence_minutes)) DESC
+            LIMIT 3
+            """,
+            (week_start, week_end),
+        )
+        worst_routes = [_clean_row(dict(r)) for r in cur.fetchall()]
+
+    return {
+        **kpi,
+        "week_start": str(week_start),
+        "week_end": str(week_end),
+        "daily_arc": daily_arc,
+        "worst_routes": worst_routes,
+    }
 
 
 def fetch_system_stats(conn):
@@ -186,6 +284,8 @@ def generate_insights():
         return
 
     system_stats = fetch_system_stats(conn)
+    weekly_snapshot = fetch_weekly_kpi_snapshot(conn, week_start)
+    snapshot_json = json.dumps(weekly_snapshot, default=str)
     prompt = build_prompt(gold_data, system_stats)
 
     # Call Claude
@@ -223,10 +323,10 @@ def generate_insights():
             cur.execute(
                 """
                 INSERT INTO ai_weekly_insights
-                    (week_start, narrative, tweet_draft, headline_text)
-                VALUES (%s, %s, %s, %s)
+                    (week_start, narrative, tweet_draft, headline_text, kpi_snapshot)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (week_start, narrative, tweet, headline),
+                (week_start, narrative, tweet, headline, snapshot_json),
             )
         conn.commit()
         log.info("Stored insights for week of %s", week_start)

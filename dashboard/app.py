@@ -104,6 +104,100 @@ def render_kpi(label: str, value: str, color: str, help_text: str = ""):
     """, unsafe_allow_html=True)
 
 
+def render_digest_kpis_and_charts(snap: dict, is_weekly: bool = False):
+    """Render saved KPI strip + hourly/daily arc + worst-routes table from a digest snapshot.
+
+    Lets archived digests keep showing the numbers they were generated with,
+    even after silver_arrivals has been pruned.
+    """
+    if not snap:
+        return
+
+    otp_val   = float(snap.get("otp_pct") or 0)
+    otp_color = "#22c55e" if otp_val >= 85 else "#f59e0b" if otp_val >= 55 else "#ef4444"
+    dly_val   = float(snap.get("avg_delay") or 0)
+    dly_color = "#22c55e" if abs(dly_val) <= 2 else "#f59e0b" if abs(dly_val) <= 5 else "#ef4444"
+    vlate     = int(snap.get("very_late") or 0)
+    vlate_col = "#22c55e" if vlate == 0 else "#f59e0b" if vlate <= 10 else "#ef4444"
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        render_kpi("On-Time %", f"{snap.get('otp_pct', '—')}%", otp_color,
+                   "System-wide on-time share at the time this digest was generated.")
+    with k2:
+        render_kpi("Avg Delay", f"{snap.get('avg_delay', '—')} min", dly_color,
+                   "Average signed adherence; negative = running early, positive = late.")
+    with k3:
+        render_kpi("Active Routes", str(snap.get("active_routes", "—")), "#3b82f6",
+                   "Distinct route IDs that produced at least one moving-bus ping.")
+    with k4:
+        render_kpi("Very Late Pings", str(snap.get("very_late", "—")), vlate_col,
+                   "Pings more than 15 min late.")
+
+    st.write("")
+
+    arc = snap.get("daily_arc" if is_weekly else "hourly_arc") or []
+    if arc:
+        rows = []
+        for r in arc:
+            if is_weekly:
+                day_str = str(r.get("day", ""))[-5:]
+                label = f"{r.get('day_name', '')} {day_str}".strip()
+            else:
+                label = f"{int(r['hour_of_day']):02d}"
+            rows.append({
+                "x_label":    label,
+                "otp_pct":    r.get("otp_pct"),
+                "perf_label": _otp_perf_label(r.get("otp_pct")),
+            })
+        fig = px.bar(
+            rows, x="x_label", y="otp_pct", color="perf_label",
+            color_discrete_map=OTP_COLOR_MAP,
+            category_orders={
+                "x_label":    [r["x_label"] for r in rows],
+                "perf_label": OTP_CATEGORY_ORDER,
+            },
+            title=("Daily On-Time % for the week" if is_weekly
+                   else "Hourly On-Time % — how the day unfolded"),
+            labels={
+                "x_label":    "Day" if is_weekly else "Hour",
+                "otp_pct":    "On-Time %",
+                "perf_label": "Performance",
+            },
+        )
+        fig.update_layout(
+            **PLOTLY_LAYOUT,
+            bargap=0.15,
+            height=260,
+            yaxis=dict(range=[0, 100]),
+            xaxis=dict(type="category"),
+            legend=dict(
+                title=dict(text="Performance", font=dict(color="#e5e7eb")),
+                bgcolor="rgba(24,26,32,0.85)",
+                bordercolor="rgba(120,120,130,0.5)",
+                borderwidth=1,
+                font=dict(size=11, color="#e5e7eb"),
+                orientation="v",
+                x=1.01, xanchor="left",
+            ),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    worst = snap.get("worst_routes") or []
+    if worst:
+        st.markdown("**⚠️ Top problem routes**")
+        st.dataframe(
+            [{
+                "Route": format_route(r.get("route_id"), r.get("route_name")),
+                "Reliability": f"{r.get('reliability', '—')}/100",
+                "Avg Delay (min)": r.get("avg_delay"),
+                "Pings": int(r.get("pings") or 0),
+            } for r in worst],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 # ── DB connection ────────────────────────────────────────
 @st.cache_resource
 def get_conn():
@@ -563,6 +657,12 @@ with tab_overview:
         # Uses the clamped-reliability score (different from the banner's
         # uncapped-delay ordering) — the heatmap is a score, the banner is
         # a severity callout.
+        # No HAVING floor: every route that produced at least one moving-bus
+        # ping with a non-null adherence in the window gets a row. Low-volume
+        # routes previously disappeared behind a COUNT(*) >= 2 gate; for a
+        # single-day pick that erased half the trippers and limited-frequency
+        # routes. `route_name IS NULL` is tolerated now — format_route falls
+        # back to the numeric ID so the route is still addressable.
         heat_sql = f"""
             SELECT route_id, route_name, hour_of_day,
                    GREATEST(0, ROUND(
@@ -573,11 +673,9 @@ with tab_overview:
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
               AND speed > 2
               AND adherence_minutes IS NOT NULL
-              AND route_name IS NOT NULL
               AND route_id NOT IN ('98', '99', '999')
               {direction_filter_sql}
             GROUP BY route_id, route_name, hour_of_day
-            HAVING COUNT(*) >= 2
             ORDER BY route_id, hour_of_day
         """
         heat_data = run_query(
@@ -987,7 +1085,7 @@ with tab_digest:
 
     # ── All weekly insights ──────────────────────────────
     insights_sql = """
-        SELECT week_start, narrative, tweet_draft, headline_text, created_at
+        SELECT week_start, narrative, tweet_draft, headline_text, created_at, kpi_snapshot
         FROM ai_weekly_insights
         ORDER BY week_start DESC
         LIMIT 12
@@ -995,11 +1093,16 @@ with tab_digest:
     insights = run_query(insights_sql)
 
     if insights:
+        import json as _json
         for ins in insights:
             with st.expander(
                 f"Week of {ins['week_start']} — {ins.get('headline_text', '')}",
                 expanded=(ins == insights[0]),
             ):
+                snap = ins.get("kpi_snapshot")
+                if snap:
+                    snap_dict = _json.loads(snap) if isinstance(snap, str) else snap
+                    render_digest_kpis_and_charts(snap_dict, is_weekly=True)
                 st.markdown(ins["narrative"])
                 # Tweet drafts remain in ai_weekly_insights for internal use
                 # but are not surfaced in the dashboard UI — the share text
@@ -1253,18 +1356,23 @@ with tab_digest:
     # ── Recent digests list ──────────────────────────────
     st.markdown("##### Recent daily digests")
     recent_sql = """
-        SELECT report_date, narrative, tweet_draft, headline_text, created_at
+        SELECT report_date, narrative, tweet_draft, headline_text, created_at, kpi_snapshot
         FROM ai_daily_insights
         ORDER BY report_date DESC
         LIMIT 30
     """
     recent = run_query(recent_sql)
     if recent:
+        import json as _json
         for ins in recent:
             with st.expander(
                 f"{ins['report_date']} — {ins.get('headline_text', '')}",
                 expanded=False,
             ):
+                snap = ins.get("kpi_snapshot")
+                if snap:
+                    snap_dict = _json.loads(snap) if isinstance(snap, str) else snap
+                    render_digest_kpis_and_charts(snap_dict, is_weekly=False)
                 st.markdown(ins["narrative"])
                 # Tweet draft kept in DB; intentionally hidden from UI.
                 st.caption(f"Generated {ins['created_at']}")

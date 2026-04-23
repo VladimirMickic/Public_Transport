@@ -37,9 +37,19 @@ jobs:
       run: |
         # 1. Ingest vehicles -> bronze
         python3 -m ingestion.fetch_realtime
-        
+
         # 2. Transform bronze -> silver (last 1 day)
         python3 -m transform.silver --days-back 0.05
-        
+
         # 3. Aggregate silver -> gold
         python3 -m transform.gold
+
+    - name: Auto-generate daily digest at end of service
+      if: success()
+      env:
+        SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: |
+        # --if-idle is a no-op before 22:00 ET, on Sundays, or while
+        # buses are still moving. One actual AI call per service day.
+        python3 -m ai_agent.daily_insights --if-idle
