@@ -72,6 +72,16 @@ def format_route(route_id, route_name) -> str:
         return f"{rid} — {rname}"
     return rname or rid or "Unknown route"
 
+def render_kpi(label: str, value: str, color: str, help_text: str = ""):
+    st.markdown(f"""
+        <div title="{help_text}" style="text-align: center; background-color: rgba(24, 26, 32, 0.8);
+                    border-radius: 8px; padding: 15px; border: 1px solid {color};
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <p style="margin: 0; font-size: 14px; color: #a1a1aa; font-weight: 600;">{label}</p>
+            <p style="margin: 0; font-size: 28px; color: {color}; font-weight: bold;">{value}</p>
+        </div>
+    """, unsafe_allow_html=True)
+
 
 # ── DB connection ────────────────────────────────────────
 @st.cache_resource
@@ -251,20 +261,38 @@ with tab_overview:
 
     if metrics and metrics[0]["total_pings"] and metrics[0]["total_pings"] > 0:
         m = metrics[0]
+        
+        otp = float(m['on_time_pct']) if m['on_time_pct'] is not None else 0
+        otp_color = "#22c55e" if otp >= 80 else "#f59e0b" if otp >= 65 else "#ef4444"
+        
+        delay = float(m['avg_delay']) if m['avg_delay'] is not None else 0
+        delay_color = "#22c55e" if delay <= 2 else "#f59e0b" if delay <= 5 else "#ef4444"
+        
+        rel = m['city_reliability']
+        if rel is None:
+            rel_color = "#3b82f6"
+            rel_val = "—"
+        else:
+            rel_val = f"{rel}/100"
+            rel_float = float(rel)
+            rel_color = "#22c55e" if rel_float >= 80 else "#f59e0b" if rel_float >= 65 else "#ef4444"
+
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total Pings", f"{m['total_pings']:,}")
-        c2.metric("On-Time %", f"{m['on_time_pct']}%")
-        c3.metric("Avg Delay", f"{m['avg_delay']} min")
-        c4.metric("Active Routes", m["active_routes"])
-        c5.metric(
-            "City Reliability",
-            f"{m['city_reliability']}/100" if m["city_reliability"] is not None else "—",
-            help="Citywide reliability score over the selected range. "
-                 "100 minus 10× average |adherence| in minutes, moving buses only. "
-                 "Each ping's |adherence| is clamped at 30 min first, so a handful "
-                 "of buses parked with stale adherence can't drag the whole city "
-                 "score to zero. Updates each 5-min ETL cycle.",
-        )
+        with c1:
+            render_kpi("Total Pings", f"{m['total_pings']:,}", "#3b82f6")
+        with c2:
+            render_kpi("On-Time %", f"{m['on_time_pct']}%", otp_color)
+        with c3:
+            render_kpi("Avg Delay", f"{m['avg_delay']} min", delay_color)
+        with c4:
+            render_kpi("Active Routes", str(m["active_routes"]), "#3b82f6")
+        with c5:
+            render_kpi(
+                "City Reliability", 
+                rel_val, 
+                rel_color, 
+                "Citywide reliability score over the selected range. 100 minus 10× average |adherence| in minutes, moving buses only. Each ping's |adherence| is clamped at 30 min first, so a handful of buses parked with stale adherence can't drag the whole city score to zero. Updates each 5-min ETL cycle."
+            )
 
         # ── Delay bucket breakdown ───────────────────────
         bucket_sql = f"""
@@ -661,7 +689,8 @@ with tab_route:
                     hourly, x="hour_label", y="on_time_pct",
                     title=f"{selected_route_name} — On-Time % by Hour",
                     labels={"hour_label": "Hour", "on_time_pct": "On-Time %"},
-                    color_discrete_sequence=["#22c55e"],
+                    color="on_time_pct",
+                    color_continuous_scale="Blues",
                     category_orders={"hour_label": hour_order},
                 )
                 fig_h.update_layout(
@@ -1029,29 +1058,25 @@ with tab_digest:
         )
 
         if kpi and kpi.get("total_pings"):
+            otp_val = float(kpi['otp_pct']) if kpi['otp_pct'] is not None else 0
+            otp_color = "#22c55e" if otp_val >= 80 else "#f59e0b" if otp_val >= 65 else "#ef4444"
+            
+            delay_val = float(kpi['avg_delay']) if kpi['avg_delay'] is not None else 0
+            delay_color = "#22c55e" if delay_val <= 2 else "#f59e0b" if delay_val <= 5 else "#ef4444"
+            
+            very_late = int(kpi["very_late"]) if kpi["very_late"] is not None else 0
+            late_color = "#22c55e" if very_late == 0 else "#f59e0b" if very_late <= 10 else "#ef4444"
+
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric(
-                "On-Time %",
-                f"{kpi['otp_pct']}%",
-                help="Share of moving-bus pings within EMTA's on-time window "
-                     "(−1 to +5 min of schedule).",
-            )
-            k2.metric(
-                "Avg Delay",
-                f"{kpi['avg_delay']} min",
-                help="Average signed adherence. Negative = running early, "
-                     "positive = running late.",
-            )
-            k3.metric(
-                "Active Routes",
-                kpi["active_routes"],
-                help="Distinct route IDs that produced at least one moving-bus ping today.",
-            )
-            k4.metric(
-                "Very Late Pings",
-                kpi["very_late"],
-                help="Number of pings where the bus was > 10 minutes behind schedule.",
-            )
+            with k1:
+                render_kpi("On-Time %", f"{kpi['otp_pct']}%", otp_color, "Share of moving-bus pings within EMTA's on-time window (−1 to +5 min of schedule).")
+            with k2:
+                render_kpi("Avg Delay", f"{kpi['avg_delay']} min", delay_color, "Average signed adherence. Negative = running early, positive = running late.")
+            with k3:
+                render_kpi("Active Routes", str(kpi["active_routes"]), "#3b82f6", "Distinct route IDs that produced at least one moving-bus ping today.")
+            with k4:
+                render_kpi("Very Late Pings", str(kpi["very_late"]), late_color, "Number of pings where the bus was > 10 minutes behind schedule.")
+            st.write("")
 
         # ── Day-arc hourly OTP chart ────────────────────────
         # A single-line chart of on-time percentage hour by hour tells the
@@ -1114,7 +1139,7 @@ with tab_digest:
               AND route_id NOT IN ('98', '99', '999')
             GROUP BY route_id, route_name
             HAVING COUNT(*) >= 20
-            ORDER BY reliability ASC
+            ORDER BY avg_delay DESC
             LIMIT 3
         """
         worst_routes = run_query(worst_routes_sql, [selected_day])

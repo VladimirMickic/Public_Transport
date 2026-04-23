@@ -75,7 +75,7 @@ def fetch_daily_summary(conn, report_date):
           AND speed > %s
         GROUP BY route_name
         HAVING COUNT(*) >= 5
-        ORDER BY on_time_pct ASC
+        ORDER BY avg_delay DESC
         LIMIT 40
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -150,8 +150,8 @@ def build_prompt(report_date, summary_data, system_stats, is_partial_day=False):
             "and do NOT project or predict end-of-day totals."
         )
 
-    prompt = f"""You are a transit data analyst writing a daily reliability report for the
-Erie Metropolitan Transit Authority (EMTA) in Erie, PA.
+    prompt = f"""You are a senior transit data analyst writing a daily reliability and performance report for the
+Erie Metropolitan Transit Authority (EMTA) in Erie, PA. Your audience includes EMTA leadership and engaged riders.
 
 The report date is: {report_date.strftime('%A, %B %d, %Y')}.
 
@@ -163,7 +163,7 @@ Here is the system-wide performance for this specific date (moving buses only):
 - Very late incidents (>15 min): {stats.get('very_late_count', 'N/A')}
 {window_line}{partial_line}
 
-Here are the worst-performing routes from that day (sorted by worst On-Time Percentage):
+Here are the worst-performing routes from that day (sorted by Average Delay descending):
 
 {data_block}
 
@@ -171,9 +171,11 @@ Here are the worst-performing routes from that day (sorted by worst On-Time Perc
 
 Write three outputs, separated by exact markers:
 
-1. A 3 paragraph narrative analysis. You MUST mention at least three specific
-   route numbers/names. Identify patterns from this specific day. Was the system particularly
-   late? Be specific and data-driven, not generic.
+1. A 3-paragraph narrative analysis. 
+   - Paragraph 1: Executive summary of system-wide performance. Was it a strong, mixed, or poor day?
+   - Paragraph 2: Route-level analysis. You MUST mention at least three specific route numbers/names, highlighting the most significant anomalies or delays. Format route names in **bold**.
+   - Paragraph 3: Contextual insights. What do these metrics suggest about operational friction or passenger experience for this specific day?
+   Be deeply analytical, specific, and data-driven. Do not use generic filler.
 
 2. After the marker ---TWEET--- on its own line, write a single tweet (≤280
    characters) summarizing the key finding. Include one specific route and
