@@ -64,6 +64,27 @@ COLORS = {
 }
 
 
+def _otp_perf_label(pct) -> str:
+    """Map an on-time % to one of three performance buckets."""
+    if pct is None:
+        return "No data"
+    pct = float(pct)
+    if pct >= 85:
+        return "Good (≥85%)"
+    if pct >= 55:
+        return "Mixed (55–84%)"
+    return "Poor (<55%)"
+
+
+OTP_COLOR_MAP = {
+    "Good (≥85%)": "#22c55e",
+    "Mixed (55–84%)": "#f59e0b",
+    "Poor (<55%)": "#ef4444",
+    "No data": "#6b7280",
+}
+OTP_CATEGORY_ORDER = ["Good (≥85%)", "Mixed (55–84%)", "Poor (<55%)", "No data"]
+
+
 def format_route(route_id, route_name) -> str:
     """Format route as '<bus#> — <name>'. Locals know buses by number first."""
     rid = "" if route_id is None else str(route_id).strip()
@@ -1108,18 +1129,26 @@ with tab_digest:
         """
         arc_rows = run_query(arc_sql, [selected_day])
         if arc_rows:
-            arc_labels = [f"{int(r['hour_of_day']):02d}" for r in arc_rows]
-            for r, lbl in zip(arc_rows, arc_labels):
-                r["hour_label"] = lbl
+            for r in arc_rows:
+                r["hour_label"] = f"{int(r['hour_of_day']):02d}"
+                r["perf_label"] = _otp_perf_label(r.get("otp_pct"))
+            hour_order = sorted({r["hour_label"] for r in arc_rows})
             fig_arc = px.bar(
                 arc_rows,
                 x="hour_label",
                 y="otp_pct",
+                color="perf_label",
+                color_discrete_map=OTP_COLOR_MAP,
+                category_orders={
+                    "hour_label": hour_order,
+                    "perf_label": OTP_CATEGORY_ORDER,
+                },
                 title="Hourly On-Time % — how the day unfolded",
-                labels={"hour_label": "Hour", "otp_pct": "On-Time %"},
-                color="otp_pct",
-                color_continuous_scale="RdYlGn",
-                range_color=[0, 100],
+                labels={
+                    "hour_label": "Hour",
+                    "otp_pct": "On-Time %",
+                    "perf_label": "Performance",
+                },
             )
             fig_arc.update_layout(
                 **PLOTLY_LAYOUT,
@@ -1127,7 +1156,15 @@ with tab_digest:
                 height=260,
                 yaxis=dict(range=[0, 100]),
                 xaxis=dict(type="category"),
-                coloraxis_showscale=False,
+                legend=dict(
+                    title=dict(text="Performance", font=dict(color="#e5e7eb")),
+                    bgcolor="rgba(24,26,32,0.85)",
+                    bordercolor="rgba(120,120,130,0.5)",
+                    borderwidth=1,
+                    font=dict(size=11, color="#e5e7eb"),
+                    orientation="v",
+                    x=1.01, xanchor="left",
+                ),
             )
             st.plotly_chart(fig_arc, use_container_width=True)
 
