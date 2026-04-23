@@ -651,19 +651,20 @@ with tab_overview:
             )
 
         # ── Route reliability heatmap ────────────────────
-        # Source: gold table (lifetime aggregate, rebuilt every ETL run).
-        # Using gold guarantees every route that has ever been tracked appears
-        # in the heatmap regardless of the sidebar date filter — silver-based
-        # queries only showed routes that ran on the selected day, so low-
-        # frequency routes and routes without adherence data that day were
-        # invisible.  Gold averages across all days-of-week to produce a
-        # single reliability score per route × hour.
+        # No date filter: show every route present in the full silver
+        # retention window (~7 days). A date-scoped query only showed
+        # routes that ran on the selected day, hiding low-frequency routes
+        # and any route that happened not to run that specific day.
         heat_sql = """
             SELECT route_id, route_name, hour_of_day,
-                   ROUND(AVG(reliability_score)::numeric, 2) AS reliability_score,
-                   SUM(total_pings) AS total_pings
-            FROM gold_route_reliability
-            WHERE route_id IS NOT NULL
+                   GREATEST(0, ROUND(
+                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 2
+                   )) AS reliability_score,
+                   COUNT(*) AS total_pings
+            FROM silver_arrivals
+            WHERE speed > 2
+              AND adherence_minutes IS NOT NULL
+              AND route_id IS NOT NULL
               AND route_id NOT IN (0, 98, 99, 999)
             GROUP BY route_id, route_name, hour_of_day
             ORDER BY route_id, hour_of_day
@@ -675,9 +676,6 @@ with tab_overview:
             df_heat["route_label"] = df_heat.apply(
                 lambda r: format_route(r["route_id"], r["route_name"]), axis=1
             )
-            # Sort route_label rows by numeric route_id where possible,
-            # else alphabetically. Without this, pandas sorts by string and
-            # puts "105" before "3" on the Y-axis.
             def _route_sort_key(rid):
                 rid_s = "" if rid is None else str(rid).strip()
                 try:
@@ -698,12 +696,33 @@ with tab_overview:
             fig_heat = px.imshow(
                 pivot,
                 color_continuous_scale="RdYlGn",
+                zmin=0,
+                zmax=100,
                 aspect="auto",
-                title="Reliability Score by Route × Hour (lifetime average)",
+                title="Reliability Score by Route × Hour",
                 labels=dict(x="Hour of Day", y="Route", color="Score"),
             )
             fig_heat.update_layout(**PLOTLY_LAYOUT)
+            fig_heat.update_coloraxes(
+                colorbar=dict(
+                    tickvals=[0, 20, 40, 60, 80, 100],
+                    ticktext=["0", "20", "40", "60", "80", "100"],
+                )
+            )
             st.plotly_chart(fig_heat, use_container_width=True)
+            st.markdown(
+                "<div style='font-size:0.8em; color:#9ca3af; border:1px solid rgba(120,120,130,0.35); "
+                "border-radius:6px; padding:8px 12px; margin-top:-8px; "
+                "background:rgba(24,26,32,0.6); max-width:680px;'>"
+                "<b>How the score is calculated:</b> "
+                "70% on-time share + 30% delay-symmetry penalty. "
+                "Running early hurts the score as much as running late — a bus that leaves early "
+                "strands waiting riders just like a late one. "
+                "Adherence is capped at 30 min so stale counters on ghost trips can't collapse a score to zero. "
+                "100 = perfect, 0 = severely off-schedule."
+                "</div>",
+                unsafe_allow_html=True,
+            )
     else:
         st.info("No data available for the selected date range. "
                 "The pipeline collects data during EMTA service hours (6 AM–11 PM ET).")
