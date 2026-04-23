@@ -308,6 +308,18 @@ if direction_choice != "All":
     )
 
 st.sidebar.markdown("---")
+st.sidebar.markdown(
+    "<div style='font-size:0.78em; color:#9ca3af; border:1px solid rgba(120,120,130,0.35); "
+    "border-radius:6px; padding:8px 10px; background:rgba(24,26,32,0.6);'>"
+    "<b style='color:#d1d5db;'>Reliability score</b><br>"
+    "70% on-time share + 30% delay-symmetry penalty. "
+    "Running early hurts as much as running late — a bus that leaves early strands waiting riders. "
+    "Adherence capped at 30 min so ghost trips can't collapse a score to zero. "
+    "100 = perfect · 0 = severely off-schedule."
+    "</div>",
+    unsafe_allow_html=True,
+)
+st.sidebar.markdown("---")
 st.sidebar.caption("Data sourced from EMTA Avail API")
 st.sidebar.caption("Updated every 5 minutes")
 st.sidebar.caption("Built by Vladimir · [GitHub](https://github.com/VladimirMickic/Public_Transport)")
@@ -651,18 +663,24 @@ with tab_overview:
             )
 
         # ── Route reliability heatmap ────────────────────
-        # No date filter: show every route present in the full silver
-        # retention window (~7 days). A date-scoped query only showed
-        # routes that ran on the selected day, hiding low-frequency routes
-        # and any route that happened not to run that specific day.
+        # Source: bronze (30-day window). Silver only retains ~7 days, so
+        # routes on alternate service patterns (e.g. routes 4, 12, 16 that
+        # haven't run in the past week) disappear from silver but are still
+        # present in bronze. The 30-day bronze window captures every route
+        # that has run at least once in the past month.
+        # hour_of_day is derived from observed_at in ET (bronze has no
+        # pre-computed hour column).
         heat_sql = """
-            SELECT route_id, route_name, hour_of_day,
+            SELECT route_id, route_name,
+                   EXTRACT(HOUR FROM (observed_at AT TIME ZONE 'America/New_York'))::integer
+                       AS hour_of_day,
                    GREATEST(0, ROUND(
                        (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 2
                    )) AS reliability_score,
                    COUNT(*) AS total_pings
-            FROM silver_arrivals
-            WHERE speed > 2
+            FROM bronze_vehicle_pings
+            WHERE observed_at >= NOW() - INTERVAL '30 days'
+              AND speed > 2
               AND adherence_minutes IS NOT NULL
               AND route_id IS NOT NULL
               AND route_id NOT IN (0, 98, 99, 999)
@@ -710,19 +728,6 @@ with tab_overview:
                 )
             )
             st.plotly_chart(fig_heat, use_container_width=True)
-            st.markdown(
-                "<div style='font-size:0.8em; color:#9ca3af; border:1px solid rgba(120,120,130,0.35); "
-                "border-radius:6px; padding:8px 12px; margin-top:-8px; "
-                "background:rgba(24,26,32,0.6); max-width:680px;'>"
-                "<b>How the score is calculated:</b> "
-                "70% on-time share + 30% delay-symmetry penalty. "
-                "Running early hurts the score as much as running late — a bus that leaves early "
-                "strands waiting riders just like a late one. "
-                "Adherence is capped at 30 min so stale counters on ghost trips can't collapse a score to zero. "
-                "100 = perfect, 0 = severely off-schedule."
-                "</div>",
-                unsafe_allow_html=True,
-            )
     else:
         st.info("No data available for the selected date range. "
                 "The pipeline collects data during EMTA service hours (6 AM–11 PM ET).")
