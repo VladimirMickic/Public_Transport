@@ -469,24 +469,15 @@ with tab_overview:
                     st.plotly_chart(fig_trend, use_container_width=True)
 
         # ── Worst peak-hour route callout ────────────────
-        # Query silver directly (not the lifetime-aggregated gold table) so
-        # the banner reflects the active date range AND refreshes each 5-min
-        # ETL cycle. Formula mirrors the gold reliability score: symmetric
-        # adherence penalty (10 points per minute of |lateness or earliness|,
-        # capped at 100). Only moving buses (speed > 2) count, matching the
-        # rest of the dashboard's convention.
+        # Query silver directly (not the lifetime-aggregated gold table) so the
+        # banner reflects the active date range and refreshes each 5-min ETL
+        # cycle. Orders by highest average absolute delay (uncapped) so the
+        # banner names the route actually running the most off-schedule at
+        # that peak hour.
         #
-        # HAVING COUNT(*) >= 100 (was 30) — a single rush hour across a range
-        # needs a real sample before we label it "worst"; below that we get
-        # tripper / detour noise. Tie-breaker is AVG(|adherence|) DESC so
-        # when multiple routes bottom out at 0/100 the banner names the one
-        # that's *actually* the most off schedule, not whichever the planner
-        # happened to return first.
-        # Reliability score uses LEAST(30, |adh|) — clamping each ping at
-        # 30 min prevents a handful of buses stranded with stale adherence
-        # (we've seen values up to 345 min) from pinning every rush-hour
-        # route to 0/100. The displayed avg_abs_delay stays *uncapped* so
-        # the operator still sees the true magnitude, not the scoring proxy.
+        # HAVING COUNT(*) >= 100 — a single rush hour across a range needs a
+        # real sample before we label it "worst"; below that we get tripper /
+        # detour noise.
         # Compute the current ET hour — used to exclude hours that haven't
         # happened yet when the user is viewing today as a single-day filter.
         _now_et_hour = datetime.now(ZoneInfo("America/New_York")).hour
@@ -548,7 +539,9 @@ with tab_overview:
         # date range (rather than reading the lifetime gold table) so every
         # route that ran any service in the window shows up — including
         # low-volume shuttles and trippers that gold previously filtered out.
-        # Formula matches the worst-route banner above.
+        # Uses the clamped-reliability score (different from the banner's
+        # uncapped-delay ordering) — the heatmap is a score, the banner is
+        # a severity callout.
         heat_sql = f"""
             SELECT route_id, route_name, hour_of_day,
                    GREATEST(0, ROUND(
