@@ -612,7 +612,7 @@ with tab_overview:
               AND hour_of_day IN (7, 8, 16, 17, 18)
               AND speed > 2
               AND adherence_minutes IS NOT NULL
-              AND route_id NOT IN ('0', '98', '99', '999')
+              AND route_id NOT IN (0, 98, 99, 999)
               {_hour_cap_sql}
               {direction_filter_sql}
             GROUP BY route_id, route_name, hour_of_day
@@ -651,41 +651,24 @@ with tab_overview:
             )
 
         # ── Route reliability heatmap ────────────────────
-        # Compute reliability per route×hour from silver within the active
-        # date range (rather than reading the lifetime gold table) so every
-        # route that ran any service in the window shows up — including
-        # low-volume shuttles and trippers that gold previously filtered out.
-        # Uses the clamped-reliability score (different from the banner's
-        # uncapped-delay ordering) — the heatmap is a score, the banner is
-        # a severity callout.
-        # No HAVING floor: every route that produced at least one moving-bus
-        # ping with a non-null adherence in the window gets a row. Low-volume
-        # routes previously disappeared behind a COUNT(*) >= 2 gate; for a
-        # single-day pick that erased half the trippers and limited-frequency
-        # routes. `route_name IS NULL` is tolerated now — format_route falls
-        # back to the numeric ID so the route is still addressable.
-        heat_sql = f"""
+        # Source: gold table (lifetime aggregate, rebuilt every ETL run).
+        # Using gold guarantees every route that has ever been tracked appears
+        # in the heatmap regardless of the sidebar date filter — silver-based
+        # queries only showed routes that ran on the selected day, so low-
+        # frequency routes and routes without adherence data that day were
+        # invisible.  Gold averages across all days-of-week to produce a
+        # single reliability score per route × hour.
+        heat_sql = """
             SELECT route_id, route_name, hour_of_day,
-                   GREATEST(0, ROUND(
-                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 2
-                   )) AS reliability_score,
-                   COUNT(*) AS total_pings
-            FROM silver_arrivals
-            WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
-              AND speed > 2
-              AND adherence_minutes IS NOT NULL
-              AND route_id IS NOT NULL
-              AND route_id != ''
-              AND route_id NOT IN ('0', '98', '99', '999')
-              {direction_filter_sql}
+                   ROUND(AVG(reliability_score)::numeric, 2) AS reliability_score,
+                   SUM(total_pings) AS total_pings
+            FROM gold_route_reliability
+            WHERE route_id IS NOT NULL
+              AND route_id NOT IN (0, 98, 99, 999)
             GROUP BY route_id, route_name, hour_of_day
             ORDER BY route_id, hour_of_day
         """
-        heat_data = run_query(
-            heat_sql,
-            [filter_start, filter_end] + direction_params,
-            live=True,
-        )
+        heat_data = run_query(heat_sql, [])
         if heat_data:
             import pandas as pd
             df_heat = pd.DataFrame(heat_data)
@@ -716,7 +699,7 @@ with tab_overview:
                 pivot,
                 color_continuous_scale="RdYlGn",
                 aspect="auto",
-                title="Reliability Score by Route × Hour",
+                title="Reliability Score by Route × Hour (lifetime average)",
                 labels=dict(x="Hour of Day", y="Route", color="Score"),
             )
             fig_heat.update_layout(**PLOTLY_LAYOUT)
