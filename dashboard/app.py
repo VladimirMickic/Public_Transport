@@ -1037,7 +1037,7 @@ with tab_digest:
         severity_label = "📊 Digest"
         if kpi and kpi.get("otp_pct") is not None:
             otp_val = float(kpi["otp_pct"])
-            if otp_val < 70:
+            if otp_val < 55:
                 severity_color, severity_label = "#ef4444", "🔴 Poor day"
             elif otp_val < 85:
                 severity_color, severity_label = "#f59e0b", "🟡 Mixed day"
