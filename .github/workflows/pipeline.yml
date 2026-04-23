@@ -39,7 +39,7 @@ jobs:
         python3 -m ingestion.fetch_realtime
         
         # 2. Transform bronze -> silver (last 1 day)
-        python3 -m transform.silver --days-back 1
+        python3 -m transform.silver --days-back 0.05
         
         # 3. Aggregate silver -> gold
         python3 -m transform.gold

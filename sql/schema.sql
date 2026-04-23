@@ -104,3 +104,12 @@ CREATE TABLE IF NOT EXISTS ai_daily_insights (
 -- Cron-driven auto runs do not increment this counter.
 ALTER TABLE ai_daily_insights
     ADD COLUMN IF NOT EXISTS generation_count INT NOT NULL DEFAULT 1;
+
+-- kpi_snapshot: JSON blob saved at generation time so archived digests
+-- can render KPI boxes and charts even after silver_arrivals is pruned
+-- (Supabase free tier keeps ~7 days of silver).
+ALTER TABLE ai_daily_insights
+    ADD COLUMN IF NOT EXISTS kpi_snapshot JSONB;
+
+ALTER TABLE ai_weekly_insights
+    ADD COLUMN IF NOT EXISTS kpi_snapshot JSONB;

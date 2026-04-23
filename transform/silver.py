@@ -76,8 +76,8 @@ DELETE_SILVER_RANGE = """
 
 def main():
     parser = argparse.ArgumentParser(description="Bronze → Silver transform")
-    parser.add_argument("--days-back", type=int, default=1,
-                        help="Process bronze pings from the last N days")
+    parser.add_argument("--days-back", type=float, default=1.0,
+                        help="Process bronze pings from the last N days (can be decimal, e.g. 0.05 for ~1 hour)")
     args = parser.parse_args()
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=args.days_back)
