@@ -263,7 +263,7 @@ with tab_overview:
         m = metrics[0]
         
         otp = float(m['on_time_pct']) if m['on_time_pct'] is not None else 0
-        otp_color = "#22c55e" if otp >= 80 else "#f59e0b" if otp >= 65 else "#ef4444"
+        otp_color = "#22c55e" if otp >= 85 else "#f59e0b" if otp >= 55 else "#ef4444"
         
         delay = float(m['avg_delay']) if m['avg_delay'] is not None else 0
         delay_color = "#22c55e" if delay <= 2 else "#f59e0b" if delay <= 5 else "#ef4444"
@@ -275,7 +275,7 @@ with tab_overview:
         else:
             rel_val = f"{rel}/100"
             rel_float = float(rel)
-            rel_color = "#22c55e" if rel_float >= 80 else "#f59e0b" if rel_float >= 65 else "#ef4444"
+            rel_color = "#22c55e" if rel_float >= 85 else "#f59e0b" if rel_float >= 55 else "#ef4444"
 
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
@@ -1059,7 +1059,7 @@ with tab_digest:
 
         if kpi and kpi.get("total_pings"):
             otp_val = float(kpi['otp_pct']) if kpi['otp_pct'] is not None else 0
-            otp_color = "#22c55e" if otp_val >= 80 else "#f59e0b" if otp_val >= 65 else "#ef4444"
+            otp_color = "#22c55e" if otp_val >= 85 else "#f59e0b" if otp_val >= 55 else "#ef4444"
             
             delay_val = float(kpi['avg_delay']) if kpi['avg_delay'] is not None else 0
             delay_color = "#22c55e" if delay_val <= 2 else "#f59e0b" if delay_val <= 5 else "#ef4444"
