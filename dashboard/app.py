@@ -69,20 +69,20 @@ def _otp_perf_label(pct) -> str:
     if pct is None:
         return "No data"
     pct = float(pct)
-    if pct >= 85:
-        return "Good (≥85%)"
-    if pct >= 55:
-        return "Mixed (55–84%)"
-    return "Poor (<55%)"
+    if pct >= 80:
+        return "Good (≥80%)"
+    if pct >= 60:
+        return "Mixed (60–79%)"
+    return "Poor (<60%)"
 
 
 OTP_COLOR_MAP = {
-    "Good (≥85%)": "#22c55e",
-    "Mixed (55–84%)": "#f59e0b",
-    "Poor (<55%)": "#ef4444",
+    "Good (≥80%)": "#22c55e",
+    "Mixed (60–79%)": "#f59e0b",
+    "Poor (<60%)": "#ef4444",
     "No data": "#6b7280",
 }
-OTP_CATEGORY_ORDER = ["Good (≥85%)", "Mixed (55–84%)", "Poor (<55%)", "No data"]
+OTP_CATEGORY_ORDER = ["Good (≥80%)", "Mixed (60–79%)", "Poor (<60%)", "No data"]
 
 
 def format_route(route_id, route_name) -> str:
@@ -114,7 +114,7 @@ def render_digest_kpis_and_charts(snap: dict, is_weekly: bool = False):
         return
 
     otp_val   = float(snap.get("otp_pct") or 0)
-    otp_color = "#22c55e" if otp_val >= 85 else "#f59e0b" if otp_val >= 55 else "#ef4444"
+    otp_color = "#22c55e" if otp_val >= 80 else "#f59e0b" if otp_val >= 60 else "#ef4444"
     dly_val   = float(snap.get("avg_delay") or 0)
     dly_color = "#22c55e" if abs(dly_val) <= 2 else "#f59e0b" if abs(dly_val) <= 5 else "#ef4444"
     vlate     = int(snap.get("very_late") or 0)
@@ -378,7 +378,7 @@ with tab_overview:
         m = metrics[0]
         
         otp = float(m['on_time_pct']) if m['on_time_pct'] is not None else 0
-        otp_color = "#22c55e" if otp >= 85 else "#f59e0b" if otp >= 55 else "#ef4444"
+        otp_color = "#22c55e" if otp >= 80 else "#f59e0b" if otp >= 60 else "#ef4444"
         
         delay = float(m['avg_delay']) if m['avg_delay'] is not None else 0
         delay_color = "#22c55e" if delay <= 2 else "#f59e0b" if delay <= 5 else "#ef4444"
@@ -390,7 +390,7 @@ with tab_overview:
         else:
             rel_val = f"{rel}/100"
             rel_float = float(rel)
-            rel_color = "#22c55e" if rel_float >= 85 else "#f59e0b" if rel_float >= 55 else "#ef4444"
+            rel_color = "#22c55e" if rel_float >= 80 else "#f59e0b" if rel_float >= 60 else "#ef4444"
 
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
@@ -600,6 +600,7 @@ with tab_overview:
         _hour_cap_sql = (
             f"AND hour_of_day <= {_now_et_hour}" if _is_single_today else ""
         )
+        _ping_threshold = 20 if filter_start == filter_end else 100
 
         worst_sql = f"""
             SELECT route_id, route_name, hour_of_day,
@@ -611,11 +612,11 @@ with tab_overview:
               AND hour_of_day IN (7, 8, 16, 17, 18)
               AND speed > 2
               AND adherence_minutes IS NOT NULL
-              AND route_id NOT IN ('98', '99', '999')
+              AND route_id NOT IN ('0', '98', '99', '999')
               {_hour_cap_sql}
               {direction_filter_sql}
             GROUP BY route_id, route_name, hour_of_day
-            HAVING COUNT(*) >= 100
+            HAVING COUNT(*) >= {_ping_threshold}
             ORDER BY AVG(ABS(adherence_minutes)) DESC
             LIMIT 1
         """
@@ -673,7 +674,9 @@ with tab_overview:
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
               AND speed > 2
               AND adherence_minutes IS NOT NULL
-              AND route_id NOT IN ('98', '99', '999')
+              AND route_id IS NOT NULL
+              AND route_id != ''
+              AND route_id NOT IN ('0', '98', '99', '999')
               {direction_filter_sql}
             GROUP BY route_id, route_name, hour_of_day
             ORDER BY route_id, hour_of_day
@@ -1081,7 +1084,13 @@ with tab_digest:
     """
     headline = run_query(headline_sql)
     if headline and headline[0]["headline_text"]:
-        st.info(f"📰 **{headline[0]['headline_text']}**")
+        st.markdown(
+            f"<div style='padding:16px 20px; background:rgba(59,130,246,0.08); "
+            f"border-radius:8px; border:1px solid rgba(59,130,246,0.3); margin-bottom:12px;'>"
+            f"<span style='font-size:1.6em; font-weight:700; color:#e5e7eb;'>"
+            f"📰 {headline[0]['headline_text']}</span></div>",
+            unsafe_allow_html=True,
+        )
 
     # ── All weekly insights ──────────────────────────────
     insights_sql = """
@@ -1171,9 +1180,9 @@ with tab_digest:
         severity_label = "📊 Digest"
         if kpi and kpi.get("otp_pct") is not None:
             otp_val = float(kpi["otp_pct"])
-            if otp_val < 55:
+            if otp_val < 60:
                 severity_color, severity_label = "#ef4444", "🔴 Poor day"
-            elif otp_val < 85:
+            elif otp_val < 80:
                 severity_color, severity_label = "#f59e0b", "🟡 Mixed day"
             else:
                 severity_color, severity_label = "#22c55e", "🟢 Strong day"
@@ -1185,7 +1194,7 @@ with tab_digest:
             f"<div style='font-size:0.78em; color:#9ca3af; letter-spacing:0.05em; "
             f"text-transform:uppercase; margin-bottom:6px;'>"
             f"{severity_label} · {selected_day}</div>"
-            f"<div style='font-size:1.1em; font-weight:600; line-height:1.4;'>"
+            f"<div style='font-size:1.6em; font-weight:700; line-height:1.4;'>"
             f"{headline_txt}</div>"
             f"</div>",
             unsafe_allow_html=True,
@@ -1193,7 +1202,7 @@ with tab_digest:
 
         if kpi and kpi.get("total_pings"):
             otp_val = float(kpi['otp_pct']) if kpi['otp_pct'] is not None else 0
-            otp_color = "#22c55e" if otp_val >= 85 else "#f59e0b" if otp_val >= 55 else "#ef4444"
+            otp_color = "#22c55e" if otp_val >= 80 else "#f59e0b" if otp_val >= 60 else "#ef4444"
             
             delay_val = float(kpi['avg_delay']) if kpi['avg_delay'] is not None else 0
             delay_color = "#22c55e" if delay_val <= 2 else "#f59e0b" if delay_val <= 5 else "#ef4444"
