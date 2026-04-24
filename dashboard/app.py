@@ -93,6 +93,15 @@ def format_route(route_id, route_name) -> str:
         return f"{rid} — {rname}"
     return rname or rid or "Unknown route"
 
+
+def format_generated_at(ts) -> str:
+    """Render a TIMESTAMPTZ as 'YYYY-MM-DD HH:MM:SS ET'. DB stores UTC; riders read ET."""
+    if ts is None:
+        return ""
+    if hasattr(ts, "astimezone"):
+        return ts.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S ET")
+    return str(ts)
+
 def render_kpi(label: str, value: str, color: str, help_text: str = ""):
     st.markdown(f"""
         <div title="{help_text}" style="text-align: center; background-color: rgba(24, 26, 32, 0.8);
@@ -670,6 +679,12 @@ with tab_overview:
         # that has run at least once in the past month.
         # hour_of_day is derived from observed_at in ET (bronze has no
         # pre-computed hour column).
+        # NOTE: we deliberately do NOT filter `adherence_minutes IS NOT NULL`
+        # here. Some routes (e.g. shuttles, routes the Avail feed never
+        # attaches to a schedule) come through with NULL adherence — filtering
+        # them out makes the route disappear entirely. AVG ignores NULLs, so
+        # a route with partial adherence still gets a real score, and a route
+        # with zero adherence shows up as a dark row instead of vanishing.
         heat_sql = """
             SELECT route_id, route_name,
                    EXTRACT(HOUR FROM (observed_at AT TIME ZONE 'America/New_York'))::integer
@@ -681,7 +696,6 @@ with tab_overview:
             FROM bronze_vehicle_pings
             WHERE observed_at >= NOW() - INTERVAL '30 days'
               AND speed > 2
-              AND adherence_minutes IS NOT NULL
               AND route_id IS NOT NULL
               AND route_id NOT IN (0, 98, 99, 999)
             GROUP BY route_id, route_name, hour_of_day
@@ -939,6 +953,18 @@ with tab_map:
         live = run_query(live_sql, direction_params, live=True)
 
         if live:
+            # Size encoding: late/very-late buses render larger so problem
+            # vehicles draw the eye first. Same status colour scheme as before;
+            # this layers severity onto an additional channel without changing
+            # the design language.
+            SIZE_BY_STATUS = {
+                "On Time": 9,
+                "Early": 9,
+                "Late": 15,
+                "Very Late": 22,
+                "Unknown": 7,
+            }
+            status_counts = {b: 0 for b in ["On Time", "Early", "Late", "Very Late", "Unknown"]}
             for v in live:
                 v["route_label"] = format_route(v.get("route_id"), v.get("route_name"))
                 # Derive a clean status bucket from adherence so "Very Late"
@@ -956,12 +982,29 @@ with tab_map:
                     v["status_bucket"] = "Late"
                 else:
                     v["status_bucket"] = "Very Late"
+                v["size_weight"] = SIZE_BY_STATUS[v["status_bucket"]]
+                status_counts[v["status_bucket"]] += 1
             fig_map = px.scatter_mapbox(
                 live,
                 lat="latitude",
                 lon="longitude",
                 hover_name="route_label",
-                hover_data=["vehicle_name", "adherence_minutes", "display_status", "speed"],
+                hover_data={
+                    "vehicle_name": True,
+                    "adherence_minutes": ":.1f",
+                    "display_status": True,
+                    "speed": ":.1f",
+                    "status_bucket": False,
+                    "size_weight": False,
+                    "latitude": False,
+                    "longitude": False,
+                },
+                labels={
+                    "vehicle_name": "Vehicle",
+                    "adherence_minutes": "Adherence (min)",
+                    "display_status": "Avail status",
+                    "speed": "Speed (mph)",
+                },
                 color="status_bucket",
                 category_orders={"status_bucket": ["On Time", "Early", "Late", "Very Late", "Unknown"]},
                 color_discrete_map={
@@ -971,6 +1014,8 @@ with tab_map:
                     "Very Late": "#ef4444",
                     "Unknown": "#6b7280",
                 },
+                size="size_weight",
+                size_max=22,
                 zoom=11,
                 height=600,
                 title="Live EMTA Vehicles",
@@ -992,10 +1037,35 @@ with tab_map:
                 **PLOTLY_LAYOUT,
             )
             st.plotly_chart(fig_map, use_container_width=True)
+
+            # Status-count strip — same colour vocabulary as the dots, so the
+            # map and the strip read as one component. Shows the operator
+            # how the live fleet is distributed at a glance.
+            stat_cols = st.columns(5)
+            stat_meta = [
+                ("On Time", "#22c55e"),
+                ("Early", "#3b82f6"),
+                ("Late", "#f59e0b"),
+                ("Very Late", "#ef4444"),
+                ("Unknown", "#6b7280"),
+            ]
+            for col, (label, color) in zip(stat_cols, stat_meta):
+                col.markdown(
+                    f"<div style='text-align:center; padding:10px; "
+                    f"border-left:3px solid {color}; "
+                    f"background:rgba(24,26,32,0.6); border-radius:4px;'>"
+                    f"<div style='font-size:11px; color:#a1a1aa; "
+                    f"text-transform:uppercase; letter-spacing:0.5px;'>{label}</div>"
+                    f"<div style='font-size:22px; color:{color}; "
+                    f"font-weight:bold; line-height:1.2;'>{status_counts[label]}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
             latest = max((v["observed_at"] for v in live if v.get("observed_at")), default=None)
             if latest is not None:
-                latest_et = latest.astimezone().strftime("%H:%M:%S")
-                st.caption(f"🕑 Most recent ping: {latest_et} · {len(live)} vehicles shown")
+                latest_et = latest.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
+                st.caption(f"🕑 Most recent ping: {latest_et} ET · {len(live)} vehicles shown")
         else:
             st.info("No live vehicles right now. Buses typically run 6 AM – 10 PM ET on weekdays.")
 
@@ -1123,7 +1193,7 @@ with tab_digest:
                 # Tweet drafts remain in ai_weekly_insights for internal use
                 # but are not surfaced in the dashboard UI — the share text
                 # is an operator tool, not a rider-facing artefact.
-                st.caption(f"Generated {ins['created_at']}")
+                st.caption(f"Generated {format_generated_at(ins['created_at'])}")
     else:
         st.info(
             "📊 **Not enough data yet.** The tracker is still young — the "
@@ -1324,7 +1394,7 @@ with tab_digest:
 
         with st.container(border=True):
             st.markdown(ins["narrative"])
-        st.caption(f"Generated {ins['created_at']}")
+        st.caption(f"Generated {format_generated_at(ins['created_at'])}")
 
         # Today's digest can always be regenerated to reflect newer data.
         if is_today:
@@ -1391,7 +1461,7 @@ with tab_digest:
                     render_digest_kpis_and_charts(snap_dict, is_weekly=False)
                 st.markdown(ins["narrative"])
                 # Tweet draft kept in DB; intentionally hidden from UI.
-                st.caption(f"Generated {ins['created_at']}")
+                st.caption(f"Generated {format_generated_at(ins['created_at'])}")
     else:
         st.info(
             "No daily insights generated yet. Pick a date above and click **Generate digest**, "
