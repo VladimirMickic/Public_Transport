@@ -672,39 +672,25 @@ with tab_overview:
                 unsafe_allow_html=True,
             )
 
-        # ── Route reliability heatmap ────────────────────
-        # Source: bronze (30-day window). Silver only retains ~7 days, so
-        # routes on alternate service patterns (e.g. routes 4, 12, 16 that
-        # haven't run in the past week) disappear from silver but are still
-        # present in bronze. The 30-day bronze window captures every route
-        # that has run at least once in the past month.
-        # hour_of_day is derived from observed_at in ET (bronze has no
-        # pre-computed hour column).
-        # NOTE: we deliberately do NOT filter `adherence_minutes IS NOT NULL`
-        # here. Some routes (e.g. shuttles, routes the Avail feed never
-        # attaches to a schedule) come through with NULL adherence — filtering
-        # them out makes the route disappear entirely. AVG ignores NULLs, so
-        # a route with partial adherence still gets a real score, and a route
-        # with zero adherence shows up as a dark row instead of vanishing.
-        # Subquery isolates the AVG-with-FILTER so the outer CASE can return
-        # NULL when a (route, hour) bucket has zero moving-bus pings. PostgreSQL
-        # GREATEST/LEAST silently ignore NULLs, which would otherwise turn
-        # "no data" into a fake score of 0 (red) or 100 (green) — neither
-        # honest. NULL flows to NaN in pandas → empty cell in the heatmap, so
-        # routes that only have idle pings (e.g. shuttles) appear as a dark
-        # row that's clearly distinguishable from "score = 0".
-        heat_sql = """
-            SELECT route_id, route_name, hour_of_day,
-                   CASE
-                       WHEN avg_abs_adh IS NULL THEN NULL
-                       ELSE ROUND((100 - LEAST(100, 10 * avg_abs_adh))::numeric, 2)
+        # ── Route reliability ranking ─────────────────────
+        # Horizontal bar chart: one row per route, sorted best→worst.
+        # Replaces the route×hour heatmap, which was fundamentally the wrong
+        # tool for an Overview tab — 30 routes × 24 hours produced a 720-cell
+        # matrix that was hard to parse and brittle against sparse data.
+        # The Overview question is "which routes are worst?", not "which hour
+        # is worst for each route?" (that detail lives in Route Detail).
+        # Source: 30-day bronze so routes on alternate schedules that haven't
+        # run this week still appear. Groups by route_id only so each route
+        # gets exactly one row regardless of NULL/non-NULL name variations.
+        rel_sql = """
+            SELECT route_id, route_name,
+                   CASE WHEN avg_abs_adh IS NULL THEN NULL
+                        ELSE GREATEST(0, ROUND(
+                            (100 - LEAST(100, 10 * avg_abs_adh))::numeric, 1))
                    END AS reliability_score,
                    total_pings
             FROM (
-                SELECT route_id,
-                       MAX(route_name) AS route_name,
-                       EXTRACT(HOUR FROM (observed_at AT TIME ZONE 'America/New_York'))::integer
-                           AS hour_of_day,
+                SELECT route_id, MAX(route_name) AS route_name,
                        AVG(LEAST(30, ABS(adherence_minutes))) FILTER (
                            WHERE speed > 2 AND adherence_minutes IS NOT NULL
                        ) AS avg_abs_adh,
@@ -713,51 +699,58 @@ with tab_overview:
                 WHERE observed_at >= NOW() - INTERVAL '30 days'
                   AND route_id IS NOT NULL
                   AND route_id NOT IN (0, 98, 99, 999)
-                GROUP BY route_id, hour_of_day
+                GROUP BY route_id
             ) sub
-            ORDER BY route_id, hour_of_day
+            WHERE total_pings >= 10
+            ORDER BY COALESCE(reliability_score, -1) DESC
         """
-        heat_data = run_query(heat_sql, [])
-        if heat_data:
+        rel_data = run_query(rel_sql, [])
+        if rel_data:
             import pandas as pd
-            df_heat = pd.DataFrame(heat_data)
-            df_heat["route_label"] = df_heat.apply(
+            df_rel = pd.DataFrame(rel_data)
+            df_rel["route_label"] = df_rel.apply(
                 lambda r: format_route(r["route_id"], r["route_name"]), axis=1
             )
-            def _route_sort_key(rid):
-                rid_s = "" if rid is None else str(rid).strip()
-                try:
-                    return (0, int(rid_s), rid_s)
-                except (TypeError, ValueError):
-                    return (1, 0, rid_s.lower())
-            route_order = [
-                r["route_label"] for r in sorted(
-                    df_heat[["route_id", "route_label"]]
-                        .drop_duplicates().to_dict("records"),
-                    key=lambda r: _route_sort_key(r["route_id"]),
-                )
-            ]
-            pivot = df_heat.pivot_table(
-                index="route_label", columns="hour_of_day",
-                values="reliability_score", aggfunc="mean"
-            ).reindex(route_order)
-            fig_heat = px.imshow(
-                pivot,
+            df_rel["score_display"] = df_rel["reliability_score"].apply(
+                lambda s: f"{s:.0f}" if s is not None else "—"
+            )
+            # Ascending sort so plotly (which renders rows bottom-to-top)
+            # places the best route at the top of the chart.
+            df_rel_sorted = df_rel.sort_values(
+                "reliability_score", ascending=True, na_position="first"
+            )
+            fig_rel = px.bar(
+                df_rel_sorted,
+                x="reliability_score",
+                y="route_label",
+                orientation="h",
+                color="reliability_score",
                 color_continuous_scale="RdYlGn",
-                zmin=0,
-                zmax=100,
-                aspect="auto",
-                title="Reliability Score by Route × Hour",
-                labels=dict(x="Hour of Day", y="Route", color="Score"),
+                range_color=[0, 100],
+                title="Route Reliability Ranking — 30-Day Window",
+                labels={
+                    "reliability_score": "Score (0–100)",
+                    "route_label": "Route",
+                    "total_pings": "Pings (30 days)",
+                },
+                text="score_display",
+                hover_data={"total_pings": True, "score_display": False},
             )
-            fig_heat.update_layout(**PLOTLY_LAYOUT)
-            fig_heat.update_coloraxes(
-                colorbar=dict(
-                    tickvals=[0, 20, 40, 60, 80, 100],
-                    ticktext=["0", "20", "40", "60", "80", "100"],
-                )
+            fig_rel.update_layout(
+                **PLOTLY_LAYOUT,
+                height=max(350, len(df_rel_sorted) * 28 + 80),
+                xaxis=dict(range=[0, 110], title="Reliability Score"),
+                yaxis=dict(title=""),
+                coloraxis=dict(
+                    colorbar=dict(
+                        tickvals=[0, 20, 40, 60, 80, 100],
+                        ticktext=["0", "20", "40", "60", "80", "100"],
+                        title="Score",
+                    )
+                ),
             )
-            st.plotly_chart(fig_heat, use_container_width=True)
+            fig_rel.update_traces(textposition="outside", cliponaxis=False)
+            st.plotly_chart(fig_rel, use_container_width=True)
     else:
         st.info("No data available for the selected date range. "
                 "The pipeline collects data during EMTA service hours (6 AM–11 PM ET).")
@@ -868,7 +861,10 @@ with tab_route:
                     xaxis=dict(type="category"),
                     showlegend=False,
                 )
-                st.plotly_chart(fig_h, use_container_width=True)
+                st.plotly_chart(
+                    fig_h, use_container_width=True,
+                    key=f"route_otp_h_{selected_route_id}_{filter_start}_{filter_end}",
+                )
 
             with col_h2:
                 fig_d = px.bar(
@@ -883,7 +879,10 @@ with tab_route:
                     bargap=0.15,
                     xaxis=dict(type="category"),
                 )
-                st.plotly_chart(fig_d, use_container_width=True)
+                st.plotly_chart(
+                    fig_d, use_container_width=True,
+                    key=f"route_delay_h_{selected_route_id}_{filter_start}_{filter_end}",
+                )
 
         # ── Bucket breakdown for this route ──────────────
         rbucket_sql = f"""
@@ -905,7 +904,10 @@ with tab_route:
                 title=f"{selected_route_name} — Delay Breakdown",
             )
             fig_rb.update_layout(**PLOTLY_LAYOUT)
-            st.plotly_chart(fig_rb, use_container_width=True)
+            st.plotly_chart(
+                fig_rb, use_container_width=True,
+                key=f"route_bucket_{selected_route_id}_{filter_start}_{filter_end}",
+            )
 
         # ── 3 worst days for this route ──────────────────
         # Always scans the last 7 days regardless of the sidebar date filter,
