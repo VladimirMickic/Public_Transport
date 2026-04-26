@@ -562,18 +562,19 @@ with tab_overview:
                         df_trend["x_label"] = df_trend["bucket_key"].apply(
                             lambda h: f"{int(h):02d}:00"
                         )
-                        # Force all 24 slots so the line spans the full day
-                        # even when some hours have no data. Missing hours
-                        # plot as gaps, not compressed points.
+                        # Force service-hours slots (04:00–23:00) so the line
+                        # spans the EMTA operating window. Missing hours plot as
+                        # gaps, not compressed points. Hours 00–03 are cut because
+                        # EMTA has no overnight service and they just add noise.
                         full_hours = pd.DataFrame({
-                            "x_label": [f"{h:02d}:00" for h in range(24)],
+                            "x_label": [f"{h:02d}:00" for h in range(4, 24)],
                         })
                         df_trend = full_hours.merge(df_trend, on="x_label", how="left")
                         x_col, x_label = "x_label", "Hour (ET)"
                         xaxis_cfg = dict(
                             type="category",
                             categoryorder="array",
-                            categoryarray=[f"{h:02d}:00" for h in range(24)],
+                            categoryarray=[f"{h:02d}:00" for h in range(4, 24)],
                         )
                     elif grain == "6h":
                         df_trend["bucket_ts"] = pd.to_datetime(
@@ -700,7 +701,8 @@ with tab_overview:
                    END AS reliability_score,
                    total_pings
             FROM (
-                SELECT route_id, route_name,
+                SELECT route_id,
+                       MAX(route_name) AS route_name,
                        EXTRACT(HOUR FROM (observed_at AT TIME ZONE 'America/New_York'))::integer
                            AS hour_of_day,
                        AVG(LEAST(30, ABS(adherence_minutes))) FILTER (
@@ -711,7 +713,7 @@ with tab_overview:
                 WHERE observed_at >= NOW() - INTERVAL '30 days'
                   AND route_id IS NOT NULL
                   AND route_id NOT IN (0, 98, 99, 999)
-                GROUP BY route_id, route_name, hour_of_day
+                GROUP BY route_id, hour_of_day
             ) sub
             ORDER BY route_id, hour_of_day
         """

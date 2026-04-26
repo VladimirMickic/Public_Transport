@@ -46,17 +46,46 @@ def get_default_date() -> date:
 
 
 def is_service_idle(conn) -> bool:
-    """Return True when no moving buses have been seen in the last 30 minutes.
+    """Return True when no moving buses have been seen in the last 45 minutes."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT COUNT(*) FROM bronze_vehicle_pings
+            WHERE observed_at >= NOW() - INTERVAL '45 minutes'
+              AND speed > 2
+        """)
+        return cur.fetchone()[0] == 0
 
-    Used by --if-idle to detect end-of-service day automatically.
+
+def had_service_today(conn) -> bool:
+    """Return True if today (ET) had at least 100 moving-bus pings.
+
+    Guards against triggering the digest at midnight when very few pings
+    have been collected (e.g. early morning before buses start), or on a
+    day when the feed was offline.
     """
     with conn.cursor() as cur:
         cur.execute("""
             SELECT COUNT(*) FROM bronze_vehicle_pings
-            WHERE observed_at >= NOW() - INTERVAL '30 minutes'
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                  = (NOW() AT TIME ZONE 'America/New_York')::date
               AND speed > 2
         """)
-        return cur.fetchone()[0] == 0
+        return cur.fetchone()[0] >= 100
+
+
+def digest_generated_recently(conn, report_date) -> bool:
+    """Return True if the digest for this date was already stored within the last 2 hours.
+
+    Prevents every 5-min pipeline run from re-calling Claude once the buses
+    have stopped and the day is done.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT 1 FROM ai_daily_insights
+            WHERE report_date = %s
+              AND created_at >= NOW() - INTERVAL '2 hours'
+        """, (report_date,))
+        return cur.fetchone() is not None
 
 
 def _clean_row(d):
@@ -458,37 +487,40 @@ def generate_daily_insights(target_date: date, manual: bool = True) -> str:
 def _run_if_idle() -> None:
     """End-of-day auto-trigger: generate today's digest once the buses stop.
 
-    Skips when:
-      - It is before 22:00 ET (service may still be running).
+    Uses dynamic detection — no fixed end-of-service time. Skips when:
       - Today is Sunday in ET (EMTA does not operate Sundays).
-      - Any moving bus has been seen in the last 30 minutes.
+      - Today has fewer than 100 moving pings (buses haven't meaningfully run yet).
+      - Any moving bus has been seen in the last 45 minutes.
+      - An end-of-day digest was already generated within the last 2 hours
+        (prevents every 5-min pipeline run from re-calling Claude).
 
-    Idempotent with the manual regen path: reuses --auto semantics (no counter
-    bump) and relies on the existing unique key on (report_date).
+    Idempotent with the manual regen path: uses --auto semantics (no counter bump).
     """
     if not SUPABASE_DB_URL or not ANTHROPIC_API_KEY:
         log.error("--if-idle: missing SUPABASE_DB_URL or ANTHROPIC_API_KEY.")
         return
 
     now_et = datetime.now(ET)
-    # Python weekday: Monday=0 … Sunday=6
     if now_et.weekday() == 6:
         log.info("--if-idle: Sunday in ET — no EMTA service, skipping.")
-        return
-    if now_et.hour < 22:
-        log.info("--if-idle: before 22:00 ET (%s), skipping.", now_et.strftime("%H:%M"))
         return
 
     conn = psycopg2.connect(SUPABASE_DB_URL, connect_timeout=10)
     try:
+        if not had_service_today(conn):
+            log.info("--if-idle: fewer than 100 moving pings today, buses haven't started or feed is offline, skipping.")
+            return
         if not is_service_idle(conn):
-            log.info("--if-idle: buses still active in last 30 min, skipping.")
+            log.info("--if-idle: buses still active in last 45 min, skipping.")
+            return
+        target_date = today_et()
+        if digest_generated_recently(conn, target_date):
+            log.info("--if-idle: digest for %s already generated within the last 2 hours, skipping.", target_date)
             return
     finally:
         conn.close()
 
-    target_date = today_et()
-    log.info("--if-idle: service idle after 22:00 ET. Generating digest for %s.", target_date)
+    log.info("--if-idle: service idle and no recent digest. Generating end-of-day digest for %s.", target_date)
     generate_daily_insights(target_date, manual=False)
 
 
