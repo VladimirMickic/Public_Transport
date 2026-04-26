@@ -690,12 +690,14 @@ with tab_overview:
                    EXTRACT(HOUR FROM (observed_at AT TIME ZONE 'America/New_York'))::integer
                        AS hour_of_day,
                    GREATEST(0, ROUND(
-                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 2
+                       (100 - LEAST(100,
+                           COALESCE(AVG(LEAST(30, ABS(adherence_minutes)))
+                               FILTER (WHERE speed > 2 AND adherence_minutes IS NOT NULL), 0) * 10
+                       ))::numeric, 2
                    )) AS reliability_score,
                    COUNT(*) AS total_pings
             FROM bronze_vehicle_pings
             WHERE observed_at >= NOW() - INTERVAL '30 days'
-              AND speed > 2
               AND route_id IS NOT NULL
               AND route_id NOT IN (0, 98, 99, 999)
             GROUP BY route_id, route_name, hour_of_day
@@ -984,17 +986,18 @@ with tab_map:
                     v["status_bucket"] = "Very Late"
                 v["size_weight"] = SIZE_BY_STATUS[v["status_bucket"]]
                 status_counts[v["status_bucket"]] += 1
+            live_for_map = [v for v in live if v["status_bucket"] != "Unknown"]
             fig_map = px.scatter_mapbox(
-                live,
+                live_for_map,
                 lat="latitude",
                 lon="longitude",
                 hover_name="route_label",
                 hover_data={
                     "vehicle_name": True,
                     "adherence_minutes": ":.1f",
-                    "display_status": True,
+                    "display_status": False,
                     "speed": ":.1f",
-                    "status_bucket": False,
+                    "status_bucket": True,
                     "size_weight": False,
                     "latitude": False,
                     "longitude": False,
@@ -1002,23 +1005,28 @@ with tab_map:
                 labels={
                     "vehicle_name": "Vehicle",
                     "adherence_minutes": "Adherence (min)",
-                    "display_status": "Avail status",
+                    "status_bucket": "Status",
                     "speed": "Speed (mph)",
                 },
                 color="status_bucket",
-                category_orders={"status_bucket": ["On Time", "Early", "Late", "Very Late", "Unknown"]},
+                category_orders={"status_bucket": ["On Time", "Early", "Late", "Very Late"]},
                 color_discrete_map={
                     "On Time": "#22c55e",
                     "Early": "#3b82f6",
                     "Late": "#f59e0b",
                     "Very Late": "#ef4444",
-                    "Unknown": "#6b7280",
                 },
                 size="size_weight",
                 size_max=22,
                 zoom=11,
                 height=600,
                 title="Live EMTA Vehicles",
+            )
+            fig_map.update_traces(
+                marker=dict(
+                    opacity=0.82,
+                    line=dict(width=1.5, color="rgba(0,0,0,0.65)"),
+                ),
             )
             fig_map.update_layout(
                 # Both map views (live + today's activity) share the same
@@ -1041,13 +1049,12 @@ with tab_map:
             # Status-count strip — same colour vocabulary as the dots, so the
             # map and the strip read as one component. Shows the operator
             # how the live fleet is distributed at a glance.
-            stat_cols = st.columns(5)
+            stat_cols = st.columns(4)
             stat_meta = [
                 ("On Time", "#22c55e"),
                 ("Early", "#3b82f6"),
                 ("Late", "#f59e0b"),
                 ("Very Late", "#ef4444"),
-                ("Unknown", "#6b7280"),
             ]
             for col, (label, color) in zip(stat_cols, stat_meta):
                 col.markdown(
