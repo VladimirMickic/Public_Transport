@@ -685,22 +685,34 @@ with tab_overview:
         # them out makes the route disappear entirely. AVG ignores NULLs, so
         # a route with partial adherence still gets a real score, and a route
         # with zero adherence shows up as a dark row instead of vanishing.
+        # Subquery isolates the AVG-with-FILTER so the outer CASE can return
+        # NULL when a (route, hour) bucket has zero moving-bus pings. PostgreSQL
+        # GREATEST/LEAST silently ignore NULLs, which would otherwise turn
+        # "no data" into a fake score of 0 (red) or 100 (green) — neither
+        # honest. NULL flows to NaN in pandas → empty cell in the heatmap, so
+        # routes that only have idle pings (e.g. shuttles) appear as a dark
+        # row that's clearly distinguishable from "score = 0".
         heat_sql = """
-            SELECT route_id, route_name,
-                   EXTRACT(HOUR FROM (observed_at AT TIME ZONE 'America/New_York'))::integer
-                       AS hour_of_day,
-                   GREATEST(0, ROUND(
-                       (100 - LEAST(100,
-                           COALESCE(AVG(LEAST(30, ABS(adherence_minutes)))
-                               FILTER (WHERE speed > 2 AND adherence_minutes IS NOT NULL), 0) * 10
-                       ))::numeric, 2
-                   )) AS reliability_score,
-                   COUNT(*) AS total_pings
-            FROM bronze_vehicle_pings
-            WHERE observed_at >= NOW() - INTERVAL '30 days'
-              AND route_id IS NOT NULL
-              AND route_id NOT IN (0, 98, 99, 999)
-            GROUP BY route_id, route_name, hour_of_day
+            SELECT route_id, route_name, hour_of_day,
+                   CASE
+                       WHEN avg_abs_adh IS NULL THEN NULL
+                       ELSE ROUND((100 - LEAST(100, 10 * avg_abs_adh))::numeric, 2)
+                   END AS reliability_score,
+                   total_pings
+            FROM (
+                SELECT route_id, route_name,
+                       EXTRACT(HOUR FROM (observed_at AT TIME ZONE 'America/New_York'))::integer
+                           AS hour_of_day,
+                       AVG(LEAST(30, ABS(adherence_minutes))) FILTER (
+                           WHERE speed > 2 AND adherence_minutes IS NOT NULL
+                       ) AS avg_abs_adh,
+                       COUNT(*) AS total_pings
+                FROM bronze_vehicle_pings
+                WHERE observed_at >= NOW() - INTERVAL '30 days'
+                  AND route_id IS NOT NULL
+                  AND route_id NOT IN (0, 98, 99, 999)
+                GROUP BY route_id, route_name, hour_of_day
+            ) sub
             ORDER BY route_id, hour_of_day
         """
         heat_data = run_query(heat_sql, [])
@@ -1022,12 +1034,11 @@ with tab_map:
                 height=600,
                 title="Live EMTA Vehicles",
             )
-            fig_map.update_traces(
-                marker=dict(
-                    opacity=0.82,
-                    line=dict(width=1.5, color="rgba(0,0,0,0.65)"),
-                ),
-            )
+            # scattermapbox.Marker doesn't support a `line` (border) attribute,
+            # so opacity is the only knob we have to make overlapping bubbles
+            # readable. 0.78 keeps every dot legible on its own while letting
+            # stacked bubbles show through each other.
+            fig_map.update_traces(marker=dict(opacity=0.78))
             fig_map.update_layout(
                 # Both map views (live + today's activity) share the same
                 # darkish-gray basemap so switching the toggle doesn't flash
