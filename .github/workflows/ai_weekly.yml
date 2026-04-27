@@ -2,10 +2,13 @@ name: AI Weekly Insights
 
 on:
   schedule:
-    # Run Saturday at 03:50 UTC (Saturday 23:50 EDT / 22:50 EST) — after
-    # EMTA's last Saturday bus. EMTA does not operate Sundays, so the
-    # weekly wrap-up for this week lands as soon as service is over.
-    - cron: '50 3 * * 6'
+    # Run Sunday at 12:00 UTC (Sunday 08:00 EDT / 07:00 EST) — after
+    # EMTA's full Saturday service is complete and before the rider's
+    # week begins. The previous schedule used '50 3 * * 6' (Saturday
+    # 03:50 UTC), which is actually Friday 23:50 ET — i.e. it fired
+    # before any Saturday bus had run. Sunday morning ET is the
+    # natural "weekly wrap-up" window.
+    - cron: '0 12 * * 0'
   workflow_dispatch:
 
 env:

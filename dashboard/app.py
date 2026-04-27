@@ -679,9 +679,26 @@ with tab_overview:
         # matrix that was hard to parse and brittle against sparse data.
         # The Overview question is "which routes are worst?", not "which hour
         # is worst for each route?" (that detail lives in Route Detail).
-        # Source: 30-day bronze so routes on alternate schedules that haven't
-        # run this week still appear. Groups by route_id only so each route
-        # gets exactly one row regardless of NULL/non-NULL name variations.
+        #
+        # Bound to the sidebar date range so this chart obeys the same
+        # window as the rest of the page (KPIs, banner, trend chart). The
+        # `live=True` (60 s) cache plus the 5-min autorefresh keeps it
+        # current within a minute of each ETL cycle. ET-localised date
+        # comparison matches the convention used everywhere else.
+        #
+        # Min-ping threshold scales with the selected span — a single-day
+        # view requires fewer pings to surface a route, but the noise
+        # caption fires to warn that the ranking is unstable. A multi-week
+        # selection demands proportionally more pings to filter out routes
+        # that only ran once or twice in that window.
+        rel_days = (filter_end - filter_start).days + 1
+        rel_min_pings = max(5, 2 * rel_days)
+        if rel_days <= 2:
+            st.caption(
+                "ℹ️ Short date ranges produce noisy rankings — one stranded "
+                "bus can swing a route's score by 20+ points. Use the sidebar "
+                "to widen the range for a more stable view."
+            )
         rel_sql = """
             SELECT route_id, route_name,
                    CASE WHEN avg_abs_adh IS NULL THEN NULL
@@ -696,15 +713,18 @@ with tab_overview:
                        ) AS avg_abs_adh,
                        COUNT(*) AS total_pings
                 FROM bronze_vehicle_pings
-                WHERE observed_at >= NOW() - INTERVAL '30 days'
+                WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                      BETWEEN %s AND %s
                   AND route_id IS NOT NULL
                   AND route_id NOT IN (0, 98, 99, 999)
                 GROUP BY route_id
             ) sub
-            WHERE total_pings >= 10
-            ORDER BY COALESCE(reliability_score, -1) DESC
+            WHERE total_pings >= %s
+            ORDER BY reliability_score DESC NULLS LAST
         """
-        rel_data = run_query(rel_sql, [])
+        rel_data = run_query(
+            rel_sql, [filter_start, filter_end, rel_min_pings], live=True
+        )
         if rel_data:
             import pandas as pd
             df_rel = pd.DataFrame(rel_data)
@@ -714,43 +734,83 @@ with tab_overview:
             df_rel["score_display"] = df_rel["reliability_score"].apply(
                 lambda s: f"{s:.0f}" if s is not None else "—"
             )
+            # Discrete colour buckets matching the rest of the dashboard
+            # (KPI tiles, severity banner, AI digest stripe): ≥80 green,
+            # 60–79 amber, <60 red. Routes with no usable data render in
+            # neutral grey.
+            def _score_bucket(s):
+                if s is None:
+                    return "No data"
+                s = float(s)
+                if s >= 80:
+                    return "Good (≥80)"
+                if s >= 60:
+                    return "Mixed (60–79)"
+                return "Poor (<60)"
+            df_rel["score_bucket"] = df_rel["reliability_score"].apply(_score_bucket)
             # Ascending sort so plotly (which renders rows bottom-to-top)
             # places the best route at the top of the chart.
             df_rel_sorted = df_rel.sort_values(
                 "reliability_score", ascending=True, na_position="first"
             )
+            score_color_map = {
+                "Good (≥80)": "#22c55e",
+                "Mixed (60–79)": "#f59e0b",
+                "Poor (<60)": "#ef4444",
+                "No data": "#6b7280",
+            }
+            score_category_order = ["Poor (<60)", "Mixed (60–79)", "Good (≥80)", "No data"]
             fig_rel = px.bar(
                 df_rel_sorted,
                 x="reliability_score",
                 y="route_label",
                 orientation="h",
-                color="reliability_score",
-                color_continuous_scale="RdYlGn",
-                range_color=[0, 100],
-                title="Route Reliability Ranking — 30-Day Window",
+                color="score_bucket",
+                color_discrete_map=score_color_map,
+                category_orders={"score_bucket": score_category_order},
+                title=(
+                    "Route Reliability — "
+                    + (filter_start.strftime("%Y-%m-%d")
+                       if filter_start == filter_end
+                       else f"{filter_start:%Y-%m-%d} – {filter_end:%Y-%m-%d}")
+                ),
                 labels={
                     "reliability_score": "Score (0–100)",
                     "route_label": "Route",
-                    "total_pings": "Pings (30 days)",
+                    "total_pings": (
+                        "Pings (today)" if rel_days == 1
+                        else f"Pings ({rel_days} days)"
+                    ),
+                    "score_bucket": "Performance",
                 },
                 text="score_display",
-                hover_data={"total_pings": True, "score_display": False},
+                hover_data={
+                    "total_pings": True,
+                    "score_display": False,
+                    "score_bucket": False,
+                },
             )
             fig_rel.update_layout(
                 **PLOTLY_LAYOUT,
                 height=max(350, len(df_rel_sorted) * 28 + 80),
                 xaxis=dict(range=[0, 110], title="Reliability Score"),
                 yaxis=dict(title=""),
-                coloraxis=dict(
-                    colorbar=dict(
-                        tickvals=[0, 20, 40, 60, 80, 100],
-                        ticktext=["0", "20", "40", "60", "80", "100"],
-                        title="Score",
-                    )
+                legend=dict(
+                    title=dict(text="Performance", font=dict(color="#e5e7eb")),
+                    bgcolor="rgba(24, 26, 32, 0.85)",
+                    bordercolor="rgba(120, 120, 130, 0.5)",
+                    borderwidth=1,
+                    font=dict(size=11, color="#e5e7eb"),
                 ),
             )
             fig_rel.update_traces(textposition="outside", cliponaxis=False)
             st.plotly_chart(fig_rel, use_container_width=True)
+        else:
+            st.info(
+                f"No routes have enough pings in the selected range "
+                f"(minimum {rel_min_pings} moving-bus pings required). "
+                f"Try widening the range with the sidebar date picker."
+            )
     else:
         st.info("No data available for the selected date range. "
                 "The pipeline collects data during EMTA service hours (6 AM–11 PM ET).")

@@ -47,10 +47,13 @@ PRUNE_LOG="$HOME/prune.log"
 # Every 5 min — ETL pipeline (bronze → silver → gold)
 CRON_LINE="*/5 * * * * cd $PROJECT_DIR && $PYTHON -m ingestion.fetch_realtime >> $LOG 2>&1 && $PYTHON -m transform.silver --days-back 0.05 >> $LOG 2>&1 && $PYTHON -m transform.gold >> $LOG 2>&1"
 
-# Daily at 03:15 local time — prune bronze/silver older than 7 days.
-# Runs during the overnight quiet window so it doesn't race the 5-min ETL.
-# Gold aggregates and AI insight tables are never touched by this job.
-PRUNE_LINE="15 3 * * * cd $PROJECT_DIR && $PYTHON -m maintenance.prune_old_data --days 7 >> $PRUNE_LOG 2>&1"
+# Daily at 03:15 local time — storage-driven prune. The script checks
+# pg_database_size and only deletes the oldest one day of bronze/silver
+# rows when the database exceeds 400 MB (≈80% of the 500 MB Supabase
+# free tier). Below that threshold it exits as a no-op, so usable
+# history is preserved as long as there is room. Gold aggregates and
+# AI insight tables are never touched.
+PRUNE_LINE="15 3 * * * cd $PROJECT_DIR && $PYTHON -m maintenance.prune_old_data >> $PRUNE_LOG 2>&1"
 
 # Strip previous EMTA-related entries (idempotent re-runs of setup_vm.sh)
 # before re-adding the current lines.

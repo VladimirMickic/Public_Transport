@@ -106,8 +106,11 @@ ALTER TABLE ai_daily_insights
     ADD COLUMN IF NOT EXISTS generation_count INT NOT NULL DEFAULT 1;
 
 -- kpi_snapshot: JSON blob saved at generation time so archived digests
--- can render KPI boxes and charts even after silver_arrivals is pruned
--- (Supabase free tier keeps ~7 days of silver).
+-- can render KPI boxes and charts even after silver_arrivals is pruned.
+-- The prune is storage-driven (see maintenance/prune_old_data.py) — it
+-- only deletes the oldest day of pings when the DB approaches the
+-- Supabase free-tier cap, so silver typically retains many weeks of
+-- history but a long-cached digest still survives any future trim.
 ALTER TABLE ai_daily_insights
     ADD COLUMN IF NOT EXISTS kpi_snapshot JSONB;
 
