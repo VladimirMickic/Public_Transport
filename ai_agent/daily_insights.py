@@ -109,7 +109,8 @@ def fetch_kpi_snapshot(conn, report_date: date) -> dict:
     Captures system-wide totals, an hourly OTP arc, and top-3 worst routes
     so archived digests keep rendering after silver_arrivals is pruned.
     """
-    # System KPIs
+    # System KPIs — exclude synthetic routes (98/99/999) so the snapshot
+    # matches the dashboard KPI strip and the AI prompt's system stats.
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -123,12 +124,13 @@ def fetch_kpi_snapshot(conn, report_date: date) -> dict:
             FROM silver_arrivals
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
               AND speed > %s
+              AND route_id NOT IN ('98', '99', '999')
             """,
             (report_date, MOVING_SPEED_MPH),
         )
         kpi = _clean_row(dict(cur.fetchone() or {}))
 
-    # Hourly OTP arc
+    # Hourly OTP arc — same exclusion so the arc and the system OTP align.
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -139,6 +141,7 @@ def fetch_kpi_snapshot(conn, report_date: date) -> dict:
             FROM silver_arrivals
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
               AND speed > %s
+              AND route_id NOT IN ('98', '99', '999')
             GROUP BY hour_of_day
             ORDER BY hour_of_day
             """,
@@ -171,10 +174,16 @@ def fetch_kpi_snapshot(conn, report_date: date) -> dict:
         )
         worst_routes = [_clean_row(dict(r)) for r in cur.fetchall()]
 
+    # data_through_et stamps the snapshot with the moment it was frozen so
+    # the dashboard can render past-day digests without drift (read from the
+    # snapshot, not a fresh Silver query) and label today's narrative as
+    # "as of HH:MM ET". Without this stamp, KPIs and narrative drift apart
+    # every 5 minutes as new pings land.
     return {
         **kpi,
         "hourly_arc": hourly_arc,
         "worst_routes": worst_routes,
+        "data_through_et": datetime.now(ET).isoformat(),
     }
 
 
@@ -194,8 +203,10 @@ MOVING_SPEED_MPH = 2  # Pings below this are treated as parked/idle and excluded
 def fetch_daily_summary(conn, report_date):
     """Fetch daily aggregated reliability data from silver_arrivals.
 
-    Only includes pings where the bus is moving (speed > MOVING_SPEED_MPH),
-    which naturally bounds the window from first to last active ride.
+    Excludes synthetic non-passenger routes (98 AM Tripper, 99 PM Tripper,
+    999 Deadhead) — they have no schedule to adhere to and would otherwise
+    appear in the worst-routes block fed to Claude. Only includes pings
+    where the bus is moving (speed > MOVING_SPEED_MPH).
     """
     sql = """
         SELECT
@@ -207,6 +218,7 @@ def fetch_daily_summary(conn, report_date):
         WHERE observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= %s::date
           AND observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' < (%s::date + INTERVAL '1 day')
           AND speed > %s
+          AND route_id NOT IN ('98', '99', '999')
         GROUP BY route_name
         HAVING COUNT(*) >= 5
         ORDER BY avg_delay DESC
@@ -220,7 +232,10 @@ def fetch_daily_summary(conn, report_date):
 def fetch_system_stats(conn, report_date):
     """Fetch high-level system stats for the daily narrative.
 
-    Moving-buses only; first/last active ride defines the reporting window.
+    Excludes synthetic non-passenger routes (98/99/999) so the system-wide
+    OTP, avg delay, and active-route count match what the dashboard KPI
+    strip shows. Moving-buses only; first/last active ride defines the
+    reporting window.
     """
     sql = """
         SELECT
@@ -238,6 +253,7 @@ def fetch_system_stats(conn, report_date):
         WHERE observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= %s::date
           AND observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' < (%s::date + INTERVAL '1 day')
           AND speed > %s
+          AND route_id NOT IN ('98', '99', '999')
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, (report_date, report_date, MOVING_SPEED_MPH))
@@ -268,20 +284,31 @@ def build_prompt(report_date, summary_data, system_stats, is_partial_day=False):
             f"{first_ride.strftime('%H:%M')} – {last_ride.strftime('%H:%M')} ET\n"
         )
 
-    partial_line = ""
-    tense_guidance = (
-        "Write in past tense; the service day is complete."
-    )
+    # Every digest is a snapshot — stamp it with the snapshot time so the
+    # narrative reads as a frozen artefact, not a live update. Past-day
+    # digests get an end-of-day stamp; today's digest gets a "so far"
+    # stamp. Either way the reader sees that the numbers below are
+    # frozen, which prevents the "narrative says 68.1%, KPI strip says
+    # 69.3%" complaint that would otherwise arise as more pings land.
+    now_et_hhmm = datetime.now(ET).strftime("%H:%M")
     if is_partial_day:
-        now_et = datetime.now(ET).strftime("%H:%M")
         partial_line = (
-            f"- Data through: {now_et} ET (PARTIAL DAY — service is still active; "
+            f"- Data through: {now_et_hhmm} ET (PARTIAL DAY — service is still active; "
             f"numbers reflect pings collected so far today).\n"
         )
         tense_guidance = (
             "This is a partial-day snapshot. Write in present/progressive tense "
             "(\"so far today\", \"as of HH:MM ET\"). Do NOT write as if the day is over, "
             "and do NOT project or predict end-of-day totals."
+        )
+    else:
+        partial_line = (
+            f"- Snapshot generated at: {now_et_hhmm} ET on {report_date.isoformat()} "
+            f"(end-of-day, complete service day).\n"
+        )
+        tense_guidance = (
+            "Write in past tense; the service day is complete. The numbers below "
+            "are a frozen snapshot — do not invent updates beyond this data."
         )
 
     prompt = f"""You are a transit data analyst writing a daily reliability report for the
@@ -330,6 +357,10 @@ Write three outputs, separated by exact markers:
      ensuring, fostering, encompasses, landscape, realm, delve, tapestry.
    - No rule-of-three patterns ("speed, precision, and efficiency").
    - End on a concrete observation, never a vague hopeful statement.
+   - Never mention or name routes 98 (AM Tripper), 99 (PM Tripper), or 999
+     (Deadhead). They are synthetic non-passenger routes with no schedule
+     and are excluded from every aggregate above. If you see "Tripper" or
+     "Deadhead" anywhere in the data block, ignore those rows entirely.
 
 2. After the marker ---TWEET--- on its own line, write a single tweet (≤280
    characters) summarizing the key finding. Include one specific route and
@@ -375,11 +406,18 @@ def parse_response(text):
     return narrative, tweet, headline
 
 
-def generate_daily_insights(target_date: date, manual: bool = True) -> str:
+def generate_daily_insights(
+    target_date: date,
+    manual: bool = True,
+    force_refresh: bool = False,
+) -> str:
     """Fetch data, call Claude, store daily results.
 
     Rules:
-    - Historical date (< today ET): cache-first. If a row exists, return "exists".
+    - Historical date (< today ET): cache-first by default. If a row exists,
+      return "exists". Pass force_refresh=True to overwrite a bad/hallucinated
+      digest; this bumps generation_count so the audit trail shows the row
+      was re-rolled.
     - Today (ET): always produce a fresh snapshot using all data so far.
         * manual=True: regenerates and increments generation_count (audit trail).
         * manual=False (cron / auto): regenerates, does NOT increment counter.
@@ -397,7 +435,7 @@ def generate_daily_insights(target_date: date, manual: bool = True) -> str:
         is_today = target_date == today_et()
         existing = fetch_existing_row(conn, target_date)
 
-        if existing and not is_today:
+        if existing and not is_today and not force_refresh:
             log.info("Insights for historical date %s already exist. Cache hit.", target_date)
             return "exists"
 

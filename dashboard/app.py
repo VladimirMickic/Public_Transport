@@ -250,7 +250,8 @@ def run_query(sql: str, params=None, live: bool = False) -> list[dict]:
 
 
 # ── Sidebar filters ──────────────────────────────────────
-st.sidebar.image("https://emta.availtec.com/InfoPoint/Content/images/logo.png", width=180)
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "bus_logo.png"
+st.sidebar.image(str(_LOGO_PATH), width=240)
 st.sidebar.title("Filters")
 
 today = date.today()
@@ -339,8 +340,16 @@ st.title("🚌 EMTA Transit Reliability Tracker")
 st.caption("Erie Metropolitan Transit Authority · Real-time performance analytics")
 
 # ── Tabs ─────────────────────────────────────────────────
-tab_overview, tab_route, tab_map, tab_digest = st.tabs(
-    ["📊 Overview", "🔍 Route Detail", "🗺️ Live Map", "🤖 AI Digest"]
+# Daily and weekly digests are separated because they are different
+# artefacts: daily reads Silver for a specific date, weekly reads the
+# Gold lifetime aggregate. Splitting them prevents users from confusing
+# "Week of 2026-04-20" (the weekly AI digest) with a header over seven
+# daily ones. The pre-existing "AI Digest" tab is preserved as the
+# Daily home; weekly gets its own tab so it isn't buried below the date
+# picker.
+tab_overview, tab_route, tab_map, tab_daily, tab_weekly = st.tabs(
+    ["📊 Overview", "🔍 Route Detail", "🗺️ Live Map",
+     "🤖 Daily Digest", "📰 Weekly Digest"]
 )
 
 
@@ -1017,16 +1026,37 @@ with tab_map:
             "The sidebar date picker does not apply here — this view is always live. "
             "The Direction filter does apply."
         )
+        # Parked-bus guard: show each vehicle's most recent ping, but only
+        # if that vehicle has *moved* (max speed > 2 mph) in the last 15 min.
+        # Pings arrive every ~5 min (one cron cycle), so a single-ping speed
+        # check would hide every bus stopped at a red light or dwelling at a
+        # stop. Looking at the rolling 15-min max distinguishes genuine
+        # in-service buses (which move at some point in any 15-min window)
+        # from depot idlers whose stale adherence counters would otherwise
+        # paint them red on the live map.
         live_sql = f"""
+            WITH recent AS (
+                SELECT vehicle_id, route_id, route_name, latitude, longitude,
+                       adherence_minutes, display_status, speed, vehicle_name,
+                       observed_at,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY vehicle_id
+                           ORDER BY observed_at DESC
+                       ) AS rn,
+                       MAX(speed) OVER (PARTITION BY vehicle_id) AS recent_max_speed
+                FROM bronze_vehicle_pings
+                WHERE observed_at >= NOW() - INTERVAL '15 minutes'
+                  AND latitude IS NOT NULL
+                  AND longitude IS NOT NULL
+                  AND route_id NOT IN ('98', '99', '999')
+                  {direction_filter_sql}
+            )
             SELECT vehicle_id, route_id, route_name, latitude, longitude,
                    adherence_minutes, display_status, speed, vehicle_name,
                    observed_at
-            FROM bronze_vehicle_pings
-            WHERE observed_at >= NOW() - INTERVAL '15 minutes'
-              AND latitude IS NOT NULL
-              AND longitude IS NOT NULL
-              AND route_id NOT IN ('98', '99', '999')
-              {direction_filter_sql}
+            FROM recent
+            WHERE rn = 1
+              AND recent_max_speed > 2
         """
         live = run_query(live_sql, direction_params, live=True)
 
@@ -1228,10 +1258,14 @@ with tab_map:
 
 
 # ══════════════════════════════════════════════════════════
-# TAB 4: AI Digest
+# TAB 5: Weekly Digest
 # ══════════════════════════════════════════════════════════
-with tab_digest:
-    st.subheader("🤖 AI Weekly Digest")
+with tab_weekly:
+    st.subheader("📰 AI Weekly Digest")
+    st.caption(
+        "Lifetime patterns from the Gold table — what's chronically bad "
+        "by route × hour × day-of-week. Generated every Sunday."
+    )
 
     # ── Latest headline banner ───────────────────────────
     headline_sql = """
@@ -1283,7 +1317,11 @@ with tab_digest:
             "full week of service data. Check back soon."
         )
 
-    st.markdown("---")
+
+# ══════════════════════════════════════════════════════════
+# TAB 4: Daily Digest
+# ══════════════════════════════════════════════════════════
+with tab_daily:
     st.subheader("📅 AI Daily Digest")
     st.caption("Metrics exclude pings where the bus is parked (speed ≤ 2 mph).")
 
@@ -1303,7 +1341,7 @@ with tab_digest:
 
     existing = run_query(
         "SELECT report_date, narrative, tweet_draft, headline_text, created_at, "
-        "generation_count "
+        "generation_count, kpi_snapshot "
         "FROM ai_daily_insights WHERE report_date = %s",
         [selected_day],
     )
@@ -1311,29 +1349,59 @@ with tab_digest:
     if existing:
         ins = existing[0]
 
-        # ── KPI strip + severity banner ──────────────────────
-        # Pull the day's moving-bus metrics straight from silver so we can
-        # present hard numbers *above* the AI narrative. This costs zero
-        # extra Anthropic tokens — it's just another cached SQL read. The
-        # OTP % also drives a severity colour stripe that frames the
-        # headline (red / amber / green), giving the digest visual weight
-        # at a glance without any additional AI calls.
-        kpi_sql = """
-            SELECT
-                ROUND(
-                    COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
-                    / NULLIF(COUNT(*), 0), 1
-                ) AS otp_pct,
-                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
-                COUNT(DISTINCT route_id) AS active_routes,
-                COUNT(*) AS total_pings,
-                COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late
-            FROM silver_arrivals
-            WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
-              AND speed > 2
-        """
-        kpi_rows = run_query(kpi_sql, [selected_day])
-        kpi = kpi_rows[0] if kpi_rows else None
+        # ── Snapshot vs live decision ────────────────────────
+        # Past-day digests must read from the kpi_snapshot saved at
+        # generation time, not from a fresh Silver query. Otherwise the
+        # narrative ("yesterday OTP was 68.1%") drifts from the KPI strip
+        # (which would re-query Silver and reflect ping arrivals after
+        # generation). The snapshot is the historical record and is
+        # immune to backfill / new pings landing late.
+        #
+        # For today: the KPI strip stays live (riders want fresh
+        # numbers), and the narrative is labelled with its frozen
+        # snapshot time so the apparent mismatch reads as expected.
+        snap_raw = ins.get("kpi_snapshot")
+        snap_dict = None
+        if snap_raw:
+            import json as _json_kpi
+            snap_dict = (_json_kpi.loads(snap_raw) if isinstance(snap_raw, str)
+                         else snap_raw)
+
+        if snap_dict:
+            # KPI strip = the snapshot, today included. The narrative is frozen
+            # at generation time; rendering the strip live (today) caused the
+            # visible numbers to drift from what the narrative cites — Silver
+            # gets rebuilt mid-day, broken adherence rows shift system avg,
+            # ping counts climb. Reading both narrative and KPIs from the
+            # same snapshot guarantees they agree forever. Riders who want
+            # live numbers use the Overview tab; Daily Digest is a frozen
+            # artefact, refreshable via the Regenerate button.
+            kpi = {
+                "otp_pct":       snap_dict.get("otp_pct"),
+                "avg_delay":     snap_dict.get("avg_delay"),
+                "active_routes": snap_dict.get("active_routes"),
+                "total_pings":   snap_dict.get("total_pings"),
+                "very_late":     snap_dict.get("very_late"),
+            }
+        else:
+            # Pre-snapshot legacy rows only (kpi_snapshot column added later).
+            kpi_sql = """
+                SELECT
+                    ROUND(
+                        COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
+                        / NULLIF(COUNT(*), 0), 1
+                    ) AS otp_pct,
+                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                    COUNT(DISTINCT route_id) AS active_routes,
+                    COUNT(*) AS total_pings,
+                    COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late
+                FROM silver_arrivals
+                WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
+                  AND speed > 2
+                  AND route_id NOT IN ('98', '99', '999')
+            """
+            kpi_rows = run_query(kpi_sql, [selected_day])
+            kpi = kpi_rows[0] if kpi_rows else None
 
         severity_color = "#6b7280"
         severity_label = "📊 Digest"
@@ -1381,24 +1449,28 @@ with tab_digest:
             st.write("")
 
         # ── Day-arc hourly OTP chart ────────────────────────
-        # A single-line chart of on-time percentage hour by hour tells the
-        # executive story "when did the day go wrong?" at a glance. Pulled
-        # from silver with the same moving-bus filter used everywhere else.
-        # No new Anthropic tokens.
-        arc_sql = """
-            SELECT hour_of_day,
-                   ROUND(
-                       COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
-                       / NULLIF(COUNT(*), 0), 1
-                   ) AS otp_pct,
-                   COUNT(*) AS pings
-            FROM silver_arrivals
-            WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
-              AND speed > 2
-            GROUP BY hour_of_day
-            ORDER BY hour_of_day
-        """
-        arc_rows = run_query(arc_sql, [selected_day])
+        # Read the arc from the saved snapshot whenever one exists, today
+        # included. The arc must agree with the narrative's hourly claims;
+        # if the chart re-queries Silver and shows different bars than the
+        # narrative cites, the digest reads as broken.
+        if snap_dict and snap_dict.get("hourly_arc"):
+            arc_rows = snap_dict["hourly_arc"]
+        else:
+            arc_sql = """
+                SELECT hour_of_day,
+                       ROUND(
+                           COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
+                           / NULLIF(COUNT(*), 0), 1
+                       ) AS otp_pct,
+                       COUNT(*) AS pings
+                FROM silver_arrivals
+                WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
+                  AND speed > 2
+                  AND route_id NOT IN ('98', '99', '999')
+                GROUP BY hour_of_day
+                ORDER BY hour_of_day
+            """
+            arc_rows = run_query(arc_sql, [selected_day])
         if arc_rows:
             for r in arc_rows:
                 r["hour_label"] = f"{int(r['hour_of_day']):02d}"
@@ -1440,27 +1512,32 @@ with tab_digest:
             st.plotly_chart(fig_arc, use_container_width=True)
 
         # ── Top-3 worst routes for the day ──────────────────
-        # Same symmetric reliability formula the Overview/heatmap use, so
-        # the digest, the banner, and the heatmap all agree on "worst".
-        worst_routes_sql = """
-            SELECT route_id, route_name,
-                   GREATEST(0, ROUND(
-                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 1
-                   )) AS reliability,
-                   ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
-                   COUNT(*) AS pings
-            FROM silver_arrivals
-            WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
-              AND speed > 2
-              AND adherence_minutes IS NOT NULL
-              AND route_name IS NOT NULL
-              AND route_id NOT IN ('98', '99', '999')
-            GROUP BY route_id, route_name
-            HAVING COUNT(*) >= 20
-            ORDER BY avg_delay DESC
-            LIMIT 3
-        """
-        worst_routes = run_query(worst_routes_sql, [selected_day])
+        # Read worst-routes from the snapshot whenever one exists, today
+        # included. Otherwise the table cites a different Belle Valley
+        # avg-delay than the narrative does, which is the exact mismatch
+        # users have repeatedly flagged.
+        if snap_dict and snap_dict.get("worst_routes"):
+            worst_routes = snap_dict["worst_routes"]
+        else:
+            worst_routes_sql = """
+                SELECT route_id, route_name,
+                       GREATEST(0, ROUND(
+                           (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 1
+                       )) AS reliability,
+                       ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                       COUNT(*) AS pings
+                FROM silver_arrivals
+                WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
+                  AND speed > 2
+                  AND adherence_minutes IS NOT NULL
+                  AND route_name IS NOT NULL
+                  AND route_id NOT IN ('98', '99', '999')
+                GROUP BY route_id, route_name
+                HAVING COUNT(*) >= 20
+                ORDER BY avg_delay DESC
+                LIMIT 3
+            """
+            worst_routes = run_query(worst_routes_sql, [selected_day])
         if worst_routes:
             st.markdown("**⚠️ Top 3 problem routes**")
             worst_display = [
@@ -1474,11 +1551,44 @@ with tab_digest:
             ]
             st.dataframe(worst_display, use_container_width=True, hide_index=True)
 
+        # Snapshot caption above the narrative — the digest is now fully
+        # frozen for every date including today. KPIs, hourly arc,
+        # worst-routes table and narrative all reflect the same moment.
+        # Today's caption nudges users toward Regenerate when they want
+        # newer numbers; past-day caption notes the snapshot is permanent.
+        snap_stamp_iso = (snap_dict or {}).get("data_through_et")
+        snap_stamp_caption = None
+        if snap_stamp_iso:
+            try:
+                snap_dt = datetime.fromisoformat(snap_stamp_iso)
+                snap_dt_et = snap_dt.astimezone(ZoneInfo("America/New_York"))
+                stamp_str = snap_dt_et.strftime("%H:%M ET on %b %d, %Y")
+                if is_today:
+                    snap_stamp_caption = (
+                        f"📌 Snapshot from {stamp_str}. KPIs, chart and "
+                        f"narrative all reflect that moment — click "
+                        f"Regenerate below for fresher numbers."
+                    )
+                else:
+                    snap_stamp_caption = (
+                        f"📌 Frozen snapshot from {stamp_str}. "
+                        f"KPIs and narrative both reflect data as of that moment."
+                    )
+            except (ValueError, TypeError):
+                snap_stamp_caption = None
+
+        if snap_stamp_caption:
+            st.caption(snap_stamp_caption)
         with st.container(border=True):
             st.markdown(ins["narrative"])
         st.caption(f"Generated {format_generated_at(ins['created_at'])}")
 
         # Today's digest can always be regenerated to reflect newer data.
+        # Historical digests can be regenerated too, but only behind a confirm
+        # gate — Claude can hallucinate route names or invert numbers, and a
+        # cached bad digest would otherwise be permanent. Confirm checkbox
+        # exists so a stray click doesn't burn an API call.
+        gen_count = ins.get("generation_count")
         if is_today:
             if st.button("Regenerate with latest data", key="regenerate_daily"):
                 with st.spinner(f"Calling Claude for {selected_day} …"):
@@ -1497,6 +1607,43 @@ with tab_digest:
                             st.error(f"Unexpected status: {status}")
                     except Exception as exc:
                         st.error(f"Regeneration failed: {exc}")
+        else:
+            with st.expander("Report a bad digest / regenerate", expanded=False):
+                st.caption(
+                    "If this digest has wrong numbers or hallucinated route "
+                    "names, you can replace it with a fresh Claude call. "
+                    "Each regeneration costs an API call and bumps the "
+                    "generation counter."
+                )
+                if gen_count is not None:
+                    st.caption(f"Current generation count: **{gen_count}**.")
+                confirm = st.checkbox(
+                    "Yes, replace this digest with a fresh one.",
+                    key=f"confirm_regen_{selected_day}",
+                )
+                if st.button(
+                    "Regenerate digest",
+                    key=f"regenerate_historical_{selected_day}",
+                    disabled=not confirm,
+                ):
+                    with st.spinner(f"Calling Claude for {selected_day} …"):
+                        try:
+                            from ai_agent.daily_insights import generate_daily_insights
+                            status = generate_daily_insights(
+                                selected_day, manual=True, force_refresh=True
+                            )
+                            _run_query_cached.clear()
+                            if status == "regenerated":
+                                st.success("Digest regenerated.")
+                                st.rerun()
+                            elif status == "no_data":
+                                st.warning(f"No moving-bus data available for {selected_day}.")
+                            elif status == "missing_env":
+                                st.error("Server is missing SUPABASE_DB_URL or ANTHROPIC_API_KEY.")
+                            else:
+                                st.error(f"Unexpected status: {status}")
+                        except Exception as exc:
+                            st.error(f"Regeneration failed: {exc}")
     else:
         st.warning(f"No digest yet for {selected_day}.")
         if st.button("Generate digest", key="generate_daily"):
@@ -1521,29 +1668,56 @@ with tab_digest:
                 except Exception as exc:
                     st.error(f"Generation failed: {exc}")
 
-    # ── Recent digests list ──────────────────────────────
-    st.markdown("##### Recent daily digests")
-    recent_sql = """
-        SELECT report_date, narrative, tweet_draft, headline_text, created_at, kpi_snapshot
+    # ── Archive table ────────────────────────────────────
+    # Replaces the previous stack of expanders that grew unbounded as
+    # more daily digests landed. A compact one-line-per-day table with
+    # Date / Headline / OTP% scales to hundreds of entries on one
+    # screen and stays scannable. Selecting a row updates the date
+    # picker above so the full digest renders without leaving the tab.
+    st.markdown("---")
+    st.markdown("##### Archive")
+    archive_sql = """
+        SELECT report_date, headline_text, kpi_snapshot
         FROM ai_daily_insights
         ORDER BY report_date DESC
-        LIMIT 30
+        LIMIT 60
     """
-    recent = run_query(recent_sql)
-    if recent:
-        import json as _json
-        for ins in recent:
-            with st.expander(
-                f"{ins['report_date']} — {ins.get('headline_text', '')}",
-                expanded=False,
-            ):
-                snap = ins.get("kpi_snapshot")
-                if snap:
-                    snap_dict = _json.loads(snap) if isinstance(snap, str) else snap
-                    render_digest_kpis_and_charts(snap_dict, is_weekly=False)
-                st.markdown(ins["narrative"])
-                # Tweet draft kept in DB; intentionally hidden from UI.
-                st.caption(f"Generated {format_generated_at(ins['created_at'])}")
+    archive = run_query(archive_sql)
+    if archive:
+        import json as _json_archive
+        archive_rows = []
+        for r in archive:
+            snap = r.get("kpi_snapshot")
+            otp = None
+            if snap:
+                snap_d = (_json_archive.loads(snap) if isinstance(snap, str)
+                          else snap)
+                otp = snap_d.get("otp_pct")
+            archive_rows.append({
+                "Date":     str(r["report_date"]),
+                "Headline": r.get("headline_text") or "—",
+                "OTP %":    f"{otp}%" if otp is not None else "—",
+            })
+        sel = st.dataframe(
+            archive_rows,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="daily_archive_table",
+        )
+        # Selecting a row jumps the date picker to that date, which
+        # lazy-renders the full digest at the top of the tab.
+        sel_rows = (sel.selection.rows if sel and sel.selection else [])
+        if sel_rows:
+            picked = archive_rows[sel_rows[0]]["Date"]
+            try:
+                picked_date = datetime.strptime(picked, "%Y-%m-%d").date()
+                if picked_date != selected_day:
+                    st.session_state["daily_digest_date"] = picked_date
+                    st.rerun()
+            except ValueError:
+                pass
     else:
         st.info(
             "No daily insights generated yet. Pick a date above and click **Generate digest**, "
