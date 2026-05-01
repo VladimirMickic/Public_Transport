@@ -362,21 +362,29 @@ Here are the worst-performing routes from that day (sorted by Average Delay desc
 
 Write three outputs, separated by exact markers:
 
-1. A 3-paragraph narrative. Each paragraph separated by a blank line.
-   - Paragraph 1 (hook): One or two sentences that pull the reader in immediately.
+1. A 3-paragraph narrative. Each paragraph separated by a blank line. Each
+   paragraph must contain AT LEAST 3 SENTENCES — the previous version was
+   too thin and riders said it skimmed past the actual story.
+   - Paragraph 1 (hook): 3 to 4 sentences that pull the reader in immediately.
      Lead with the single most striking ROUTE-LEVEL fact from the per-route
-     table above (e.g. a specific route's delay or OTP). Do NOT cite system-wide
-     totals (total pings, system OTP, system avg delay, very-late count, active
-     route count) — those go in the auto-inserted summary paragraph. Short and
-     punchy. No throat-clearing, no "Today's report covers...", no date recap.
-   - Paragraph 2 (route-level): You MUST name at least three specific route
-     numbers/names in **bold**. Highlight the most significant anomalies. Use
-     per-route OTP, avg delay, and ping counts from the table above. If a
-     route shows a wildly negative average delay (e.g. -100+ min), flag it as a
-     likely data-reporting issue rather than real early arrivals.
-   - Paragraph 3 (insight): What do these patterns suggest about operational
-     friction or rider experience? Concrete observations, not vague hope. Do
-     NOT cite system-wide totals here either.
+     table above (e.g. a specific route's delay or OTP). Build on that with
+     one or two sentences of context. Do NOT cite system-wide totals (total
+     pings, system OTP, system avg delay, very-late count, active route
+     count) — those go in the auto-inserted summary paragraph. Punchy but
+     substantive. No throat-clearing, no "Today's report covers...", no
+     date recap.
+   - Paragraph 2 (route-level): 4 to 6 sentences. You MUST name at least
+     three specific route numbers/names in **bold**. Cite per-route OTP,
+     avg delay, and ping counts from the table above. Compare two of the
+     routes against each other to give the reader a sense of scale. If a
+     route shows a wildly negative average delay (e.g. -100+ min), flag it
+     as a likely data-reporting issue rather than real early arrivals,
+     and explain briefly what kind of glitch this looks like.
+   - Paragraph 3 (insight): 3 to 5 sentences. What do these patterns
+     suggest about operational friction or rider experience? Concrete
+     observations, not vague hope. End with a sentence that names the
+     practical takeaway for an EMTA dispatcher or rider planning their
+     trip. Do NOT cite system-wide totals here either.
 
    WRITING RULES — read carefully:
    - Vary sentence length. Short punchy ones. Longer ones that build context.
@@ -406,6 +414,69 @@ Write three outputs, separated by exact markers:
 Start the narrative immediately — no preamble or title."""
 
     return prompt
+
+
+# Phrases that strongly indicate a paragraph is Claude's hallucinated
+# system-stats paragraph (which we want to replace with our deterministic
+# build_summary_paragraph output). Matched case-insensitively. Each phrase
+# is something a stats paragraph would say but a route-level or insight
+# paragraph would not — e.g. "system-wide", "across all routes",
+# "vehicle pings", "tracked so far". Adding "(very )?late incidents" and
+# "EMTA is posting" / "EMTA tracked" catches the variants Claude has
+# generated in past iterations.
+_SYSTEM_STATS_GIVEAWAYS = (
+    "system-wide",
+    "system performance",
+    "across all routes",
+    "across the network",
+    "vehicle pings",
+    "tracked so far",
+    "tracked across",
+    "very late incidents",
+    "late incidents",
+    "emta is posting",
+    "emta tracked",
+    "system on-time",
+    "system-level",
+)
+
+
+def _looks_like_system_stats_paragraph(paragraph: str) -> bool:
+    """True if the paragraph reads like Claude's hallucinated stats paragraph.
+
+    A paragraph qualifies if it contains a system-stats giveaway phrase AND
+    a percentage sign — the combination distinguishes a stats paragraph
+    from a route-level paragraph that happens to mention "system" in passing.
+    """
+    if not paragraph:
+        return False
+    lower = paragraph.lower()
+    if "%" not in lower:
+        return False
+    return any(phrase in lower for phrase in _SYSTEM_STATS_GIVEAWAYS)
+
+
+def _scrub_and_inject_summary(
+    narrative: str, snapshot: dict, is_partial_day: bool
+) -> str:
+    """Drop Claude's hallucinated stats paragraph(s) and insert our own.
+
+    The deterministic summary paragraph is inserted at position 1 (right
+    after Claude's hook). If Claude's response had no hook, the summary
+    becomes the first paragraph and the rest follows.
+    """
+    summary_para = build_summary_paragraph(snapshot, is_partial_day=is_partial_day)
+    paragraphs = [p.strip() for p in (narrative or "").split("\n\n") if p.strip()]
+    cleaned = [p for p in paragraphs if not _looks_like_system_stats_paragraph(p)]
+
+    if not summary_para:
+        return "\n\n".join(cleaned) if cleaned else (narrative or "")
+
+    if not cleaned:
+        return summary_para
+
+    cleaned.insert(1, summary_para) if len(cleaned) >= 1 else cleaned.append(summary_para)
+    return "\n\n".join(cleaned)
 
 
 def build_summary_paragraph(snapshot: dict, is_partial_day: bool) -> str:
@@ -565,19 +636,20 @@ def generate_daily_insights(
 
         narrative, tweet, headline = parse_response(raw_response)
 
-        # Inject the deterministic system-summary paragraph between Claude's
-        # hook (paragraph 1) and route-level paragraph (paragraph 2). This
-        # is what guarantees the narrative's system numbers match the KPI
-        # strip — Claude only writes about ROUTES, the system numbers are
-        # rendered here from the same snapshot dict that gets persisted.
-        summary_para = build_summary_paragraph(kpi_snapshot, is_partial_day=is_today)
-        if summary_para:
-            paragraphs = [p.strip() for p in narrative.split("\n\n") if p.strip()]
-            if len(paragraphs) >= 1:
-                paragraphs.insert(1, summary_para)
-                narrative = "\n\n".join(paragraphs)
-            else:
-                narrative = summary_para + "\n\n" + narrative
+        # Defensive scrub: even though the prompt forbids Claude from
+        # citing system-wide totals, Claude reliably ignores that rule
+        # and produces a stats paragraph anyway, with hallucinated
+        # numbers (saw 72.2% in prompt, wrote 73.8% in narrative). Detect
+        # any paragraph that reads like a system-stats paragraph and drop
+        # it — _looks_like_system_stats_paragraph picks up the giveaway
+        # phrases ("system-wide", "vehicle pings", "tracked so far",
+        # "across all routes"). The deterministic summary paragraph is
+        # then inserted at position 1 (right after the hook), giving us
+        # back the 4-paragraph structure with mathematically-correct
+        # system numbers.
+        narrative = _scrub_and_inject_summary(
+            narrative, kpi_snapshot, is_partial_day=is_today
+        )
 
         log.info("Stored Headline: %s", headline)
 

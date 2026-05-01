@@ -219,10 +219,53 @@ def render_digest_kpis_and_charts(snap: dict, is_weekly: bool = False):
 
 
 # ── DB connection ────────────────────────────────────────
+def _get_secret(name: str) -> str | None:
+    """Read a secret from Streamlit Cloud's st.secrets first, then env.
+
+    Streamlit Cloud injects Settings → Secrets entries into st.secrets but
+    NOT into os.environ. Locally, dotenv populates os.environ. Reading
+    both lets the same code work in both environments without an env-var
+    promotion step.
+    """
+    try:
+        if name in st.secrets:
+            return st.secrets[name]
+    except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+        pass
+    return os.environ.get(name)
+
+
+def _promote_secrets_to_env() -> None:
+    """Mirror Streamlit Cloud secrets into os.environ for child modules.
+
+    daily_insights.py / insights.py read SUPABASE_DB_URL and
+    ANTHROPIC_API_KEY straight from os.environ (so they work the same
+    way under cron, GitHub Actions, and local CLI). Streamlit Cloud
+    only exposes secrets via st.secrets, not os.environ. Promoting
+    them here, once, lets the existing modules work on Cloud unchanged.
+    """
+    for key in ("SUPABASE_DB_URL", "ANTHROPIC_API_KEY"):
+        if os.environ.get(key):
+            continue
+        val = _get_secret(key)
+        if val:
+            os.environ[key] = val
+
+
+_promote_secrets_to_env()
+
+
 @st.cache_resource
 def get_conn():
     """Single shared DB connection (cached across reruns)."""
-    return psycopg2.connect(os.environ["SUPABASE_DB_URL"], connect_timeout=10)
+    db_url = _get_secret("SUPABASE_DB_URL")
+    if not db_url:
+        st.error(
+            "SUPABASE_DB_URL is not configured. On Streamlit Cloud, set it in "
+            "Settings → Secrets. Locally, add it to your .env file."
+        )
+        st.stop()
+    return psycopg2.connect(db_url, connect_timeout=10)
 
 
 @st.cache_data(ttl=300)
@@ -1272,6 +1315,14 @@ with tab_map:
 # TAB 5: Weekly Digest
 # ══════════════════════════════════════════════════════════
 with tab_weekly:
+    st.markdown(
+        "<h1 style='text-align:center; font-size:2.4em; margin: 0 0 4px;'>"
+        "Seven Days on the Streets of Erie</h1>"
+        "<p style='text-align:center; color:#9ca3af; font-size:1.05em; "
+        "margin: 0 0 22px; letter-spacing:0.02em;'>"
+        "An AI weekly readout on which routes earned rider trust — and which lost it.</p>",
+        unsafe_allow_html=True,
+    )
     st.subheader("📰 AI Weekly Digest")
     st.caption(
         "Lifetime patterns from the Gold table — what's chronically bad "
@@ -1333,6 +1384,14 @@ with tab_weekly:
 # TAB 4: Daily Digest
 # ══════════════════════════════════════════════════════════
 with tab_daily:
+    st.markdown(
+        "<h1 style='text-align:center; font-size:2.4em; margin: 0 0 4px;'>"
+        "Today on the Streets of Erie</h1>"
+        "<p style='text-align:center; color:#9ca3af; font-size:1.05em; "
+        "margin: 0 0 22px; letter-spacing:0.02em;'>"
+        "An AI daily readout on how EMTA buses kept their promises today.</p>",
+        unsafe_allow_html=True,
+    )
     st.subheader("📅 AI Daily Digest")
     st.caption("Metrics exclude pings where the bus is parked (speed ≤ 2 mph).")
 
@@ -1604,7 +1663,13 @@ with tab_daily:
             if st.button("Regenerate with latest data", key="regenerate_daily"):
                 with st.spinner(f"Calling Claude for {selected_day} …"):
                     try:
-                        from ai_agent.daily_insights import generate_daily_insights
+                        # Force-reload so dev edits to daily_insights take
+                        # effect without restarting Streamlit. Without this,
+                        # Python's sys.modules cache returns the version
+                        # imported when Streamlit first booted.
+                        import importlib, ai_agent.daily_insights as _di
+                        importlib.reload(_di)
+                        generate_daily_insights = _di.generate_daily_insights
                         status = generate_daily_insights(selected_day)
                         _run_query_cached.clear()
                         if status == "regenerated":
@@ -1639,7 +1704,9 @@ with tab_daily:
                 ):
                     with st.spinner(f"Calling Claude for {selected_day} …"):
                         try:
-                            from ai_agent.daily_insights import generate_daily_insights
+                            import importlib, ai_agent.daily_insights as _di
+                            importlib.reload(_di)
+                            generate_daily_insights = _di.generate_daily_insights
                             status = generate_daily_insights(
                                 selected_day, manual=True, force_refresh=True
                             )
