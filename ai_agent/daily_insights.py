@@ -106,11 +106,19 @@ def _clean_row(d):
 def fetch_kpi_snapshot(conn, report_date: date) -> dict:
     """Build the KPI snapshot persisted alongside the narrative.
 
-    Captures system-wide totals, an hourly OTP arc, and top-3 worst routes
-    so archived digests keep rendering after silver_arrivals is pruned.
+    This is the SINGLE source of truth for the digest. Claude's prompt is
+    built from these exact numbers (see build_prompt) and the dashboard
+    renders KPIs/chart/table from them too. Capturing once eliminates the
+    drift that used to occur when Claude saw one Silver read and the
+    snapshot captured another 30 seconds later (after the API call), with
+    a 5-min ETL Silver rebuild landing in between.
+
+    Captures system-wide totals, service window, an hourly OTP arc, and
+    top-3 worst routes so archived digests keep rendering after
+    silver_arrivals is pruned.
     """
-    # System KPIs — exclude synthetic routes (98/99/999) so the snapshot
-    # matches the dashboard KPI strip and the AI prompt's system stats.
+    # System KPIs + service window — exclude synthetic routes (98/99/999)
+    # so the snapshot matches the dashboard KPI strip exactly.
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -120,7 +128,9 @@ def fetch_kpi_snapshot(conn, report_date: date) -> dict:
                 ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
                 COUNT(DISTINCT route_id)                  AS active_routes,
                 COUNT(*)                                  AS total_pings,
-                COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late
+                COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late,
+                MIN(observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') AS first_ride,
+                MAX(observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') AS last_ride
             FROM silver_arrivals
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
               AND speed > %s
@@ -229,39 +239,14 @@ def fetch_daily_summary(conn, report_date):
         return cur.fetchall()
 
 
-def fetch_system_stats(conn, report_date):
-    """Fetch high-level system stats for the daily narrative.
+def build_prompt(report_date, summary_data, snapshot, is_partial_day=False):
+    """Build the Claude prompt from the persisted KPI snapshot.
 
-    Excludes synthetic non-passenger routes (98/99/999) so the system-wide
-    OTP, avg delay, and active-route count match what the dashboard KPI
-    strip shows. Moving-buses only; first/last active ride defines the
-    reporting window.
+    The snapshot is the single source of truth — Claude sees the same
+    numbers the dashboard later renders, so the narrative cannot drift
+    from the KPI strip. snapshot must be the dict produced by
+    fetch_kpi_snapshot().
     """
-    sql = """
-        SELECT
-            COUNT(*) AS total_pings,
-            COUNT(DISTINCT route_id) AS routes,
-            ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
-            ROUND(
-                COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
-                / NULLIF(COUNT(*), 0), 1
-            ) AS system_on_time_pct,
-            COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late_count,
-            MIN(observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') AS first_ride,
-            MAX(observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York') AS last_ride
-        FROM silver_arrivals
-        WHERE observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' >= %s::date
-          AND observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' < (%s::date + INTERVAL '1 day')
-          AND speed > %s
-          AND route_id NOT IN ('98', '99', '999')
-    """
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(sql, (report_date, report_date, MOVING_SPEED_MPH))
-        return cur.fetchone()
-
-
-def build_prompt(report_date, summary_data, system_stats, is_partial_day=False):
-    """Build the Claude prompt with real daily data."""
     # Format daily data as a readable table
     data_lines = []
     for row in summary_data:
@@ -273,15 +258,49 @@ def build_prompt(report_date, summary_data, system_stats, is_partial_day=False):
         )
     data_block = "\n".join(data_lines)
 
-    stats = system_stats or {}
+    snap = snapshot or {}
 
-    first_ride = stats.get("first_ride")
-    last_ride = stats.get("last_ride")
+    # first_ride / last_ride come from fetch_kpi_snapshot as ISO strings
+    # in UTC (postgres returns timezone-aware timestamps; _clean_row
+    # serialised them via .isoformat()). Convert to ET for display so
+    # Claude reports the service window in EMTA's local time.
+    def _hhmm_et(iso):
+        if not iso:
+            return None
+        try:
+            return datetime.fromisoformat(iso).astimezone(ET).strftime("%H:%M")
+        except (ValueError, TypeError):
+            return None
+
+    first_hhmm = _hhmm_et(snap.get("first_ride"))
+    last_hhmm = _hhmm_et(snap.get("last_ride"))
+
+    # Format snapshot numbers as integers / 1-decimal floats so Claude
+    # quotes "3336" rather than "3336.0" in the narrative. The snapshot
+    # stores these as floats (psycopg2 ROUND result + JSON), but the
+    # narrative reads cleaner with bare integers.
+    def _int(v):
+        try:
+            return int(round(float(v)))
+        except (TypeError, ValueError):
+            return v if v is not None else "N/A"
+
+    def _f1(v):
+        try:
+            return f"{float(v):.1f}"
+        except (TypeError, ValueError):
+            return v if v is not None else "N/A"
+
+    snap_total_pings   = _int(snap.get("total_pings"))
+    snap_active_routes = _int(snap.get("active_routes"))
+    snap_very_late     = _int(snap.get("very_late"))
+    snap_otp_pct       = _f1(snap.get("otp_pct"))
+    snap_avg_delay     = _f1(snap.get("avg_delay"))
     window_line = ""
-    if first_ride and last_ride:
+    if first_hhmm and last_hhmm:
         window_line = (
             f"- Service window (first to last moving bus): "
-            f"{first_ride.strftime('%H:%M')} – {last_ride.strftime('%H:%M')} ET\n"
+            f"{first_hhmm} – {last_hhmm} ET\n"
         )
 
     # Every digest is a snapshot — stamp it with the snapshot time so the
@@ -317,12 +336,14 @@ leadership and engaged riders who want real numbers, not corporate filler.
 
 The report date is: {report_date.strftime('%A, %B %d, %Y')}.
 
-Here is the system-wide performance for this specific date (moving buses only):
-- Total vehicle pings tracked: {stats.get('total_pings', 'N/A')}
-- Active routes: {stats.get('routes', 'N/A')}
-- System-wide on-time percentage: {stats.get('system_on_time_pct', 'N/A')}%
-- Average delay: {stats.get('avg_delay', 'N/A')} minutes
-- Very late incidents (>15 min): {stats.get('very_late_count', 'N/A')}
+Here is the system-wide performance for this specific date (moving buses only).
+These numbers ARE the snapshot riders see on the dashboard KPI strip — quote
+them VERBATIM in your narrative. Do not round, paraphrase, or recalculate.
+- Total vehicle pings tracked: {snap_total_pings}
+- Active routes: {snap_active_routes}
+- System-wide on-time percentage: {snap_otp_pct}%
+- Average delay: {snap_avg_delay} minutes
+- Very late incidents (>15 min): {snap_very_late}
 {window_line}{partial_line}
 
 Here are the worst-performing routes from that day (sorted by Average Delay descending):
@@ -445,8 +466,17 @@ def generate_daily_insights(
             log.info("No silver_arrivals data available for %s. Cannot generate insights.", target_date)
             return "no_data"
 
-        system_stats = fetch_system_stats(conn, target_date)
-        prompt = build_prompt(target_date, summary_data, system_stats, is_partial_day=is_today)
+        # Capture the KPI snapshot BEFORE calling Claude. The prompt is
+        # built from this exact dict, and the same dict is persisted on
+        # the row, so the narrative and the dashboard KPI strip cannot
+        # disagree. (Previously the snapshot was captured AFTER the API
+        # call returned, ~30s later, by which time the 5-min ETL had
+        # often rebuilt Silver and shifted the numbers — producing the
+        # "narrative says 73.8%, KPI strip says 71.4%" mismatch.)
+        kpi_snapshot = fetch_kpi_snapshot(conn, target_date)
+        snapshot_json = json.dumps(kpi_snapshot, default=str)
+
+        prompt = build_prompt(target_date, summary_data, kpi_snapshot, is_partial_day=is_today)
 
         # Call Claude
         log.info(
@@ -464,9 +494,6 @@ def generate_daily_insights(
 
         narrative, tweet, headline = parse_response(raw_response)
         log.info("Stored Headline: %s", headline)
-
-        kpi_snapshot = fetch_kpi_snapshot(conn, target_date)
-        snapshot_json = json.dumps(kpi_snapshot, default=str)
 
         with conn.cursor() as cur:
             if existing is None:
