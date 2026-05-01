@@ -330,15 +330,23 @@ def build_prompt(report_date, summary_data, snapshot, is_partial_day=False):
             "are a frozen snapshot — do not invent updates beyond this data."
         )
 
+    # Claude is asked for THREE paragraphs (hook, route-level, insight). The
+    # executive-summary paragraph is built programmatically from the snapshot
+    # and inserted between Claude's hook and route-level paragraphs (see
+    # generate_daily_insights). This is deliberate: even with strong "quote
+    # verbatim" instructions, Claude reliably hallucinated system numbers
+    # (saw 72.2% in prompt, wrote 73.8% in narrative). Removing the system
+    # numbers from Claude's writing surface makes the mismatch impossible.
     prompt = f"""You are a transit data analyst writing a daily reliability report for the
 Erie Metropolitan Transit Authority (EMTA) in Erie, PA. Your audience is EMTA
 leadership and engaged riders who want real numbers, not corporate filler.
 
 The report date is: {report_date.strftime('%A, %B %d, %Y')}.
 
-Here is the system-wide performance for this specific date (moving buses only).
-These numbers ARE the snapshot riders see on the dashboard KPI strip — quote
-them VERBATIM in your narrative. Do not round, paraphrase, or recalculate.
+System-wide context for this date (moving buses only). These numbers are
+shown to you ONLY for situational awareness — DO NOT cite or repeat any of
+them in your output. A separate executive-summary paragraph quoting these
+numbers will be inserted automatically.
 - Total vehicle pings tracked: {snap_total_pings}
 - Active routes: {snap_active_routes}
 - System-wide on-time percentage: {snap_otp_pct}%
@@ -354,18 +362,21 @@ Here are the worst-performing routes from that day (sorted by Average Delay desc
 
 Write three outputs, separated by exact markers:
 
-1. A 4-paragraph narrative analysis.
+1. A 3-paragraph narrative. Each paragraph separated by a blank line.
    - Paragraph 1 (hook): One or two sentences that pull the reader in immediately.
-     Lead with the single most striking number or fact from this day. Short and
+     Lead with the single most striking ROUTE-LEVEL fact from the per-route
+     table above (e.g. a specific route's delay or OTP). Do NOT cite system-wide
+     totals (total pings, system OTP, system avg delay, very-late count, active
+     route count) — those go in the auto-inserted summary paragraph. Short and
      punchy. No throat-clearing, no "Today's report covers...", no date recap.
-   - Paragraph 2 (executive summary): System-wide context. Was it a strong,
-     mixed, or poor day? Give the key numbers and what they mean for a rider.
-   - Paragraph 3 (route-level): You MUST name at least three specific route
-     numbers/names in **bold**. Highlight the most significant anomalies. If a
+   - Paragraph 2 (route-level): You MUST name at least three specific route
+     numbers/names in **bold**. Highlight the most significant anomalies. Use
+     per-route OTP, avg delay, and ping counts from the table above. If a
      route shows a wildly negative average delay (e.g. -100+ min), flag it as a
      likely data-reporting issue rather than real early arrivals.
-   - Paragraph 4 (insight): What do these patterns suggest about operational
-     friction or rider experience? Concrete observations, not vague hope.
+   - Paragraph 3 (insight): What do these patterns suggest about operational
+     friction or rider experience? Concrete observations, not vague hope. Do
+     NOT cite system-wide totals here either.
 
    WRITING RULES — read carefully:
    - Vary sentence length. Short punchy ones. Longer ones that build context.
@@ -385,7 +396,8 @@ Write three outputs, separated by exact markers:
 
 2. After the marker ---TWEET--- on its own line, write a single tweet (≤280
    characters) summarizing the key finding. Include one specific route and
-   one specific number. No hashtags.
+   one specific number from the per-route table (not a system-wide total).
+   No hashtags.
 
 3. After the marker ---HEADLINE--- on its own line, write a one-sentence
    attention-grabbing headline (≤100 characters, no hashtags) suitable for an
@@ -394,6 +406,65 @@ Write three outputs, separated by exact markers:
 Start the narrative immediately — no preamble or title."""
 
     return prompt
+
+
+def build_summary_paragraph(snapshot: dict, is_partial_day: bool) -> str:
+    """Deterministic executive-summary paragraph built from the snapshot.
+
+    Inserted between Claude's hook (paragraph 1) and route-level paragraph
+    (paragraph 2) so the system-wide numbers in the narrative are
+    mathematically guaranteed to match the KPI strip. Claude is explicitly
+    forbidden from citing these numbers in the prompt — they're only
+    rendered here.
+    """
+    snap = snapshot or {}
+
+    def _int(v):
+        try:
+            return int(round(float(v)))
+        except (TypeError, ValueError):
+            return None
+
+    def _f1(v):
+        try:
+            return f"{float(v):.1f}"
+        except (TypeError, ValueError):
+            return None
+
+    otp        = _f1(snap.get("otp_pct"))
+    avg_delay  = _f1(snap.get("avg_delay"))
+    pings      = _int(snap.get("total_pings"))
+    routes     = _int(snap.get("active_routes"))
+    very_late  = _int(snap.get("very_late"))
+
+    if otp is None or pings is None:
+        return ""
+
+    otp_val = float(otp)
+    if otp_val >= 80:
+        verdict = "a strong day"
+    elif otp_val >= 60:
+        verdict = "a mixed day"
+    else:
+        verdict = "a poor day"
+
+    pings_str = f"{pings:,}"
+    very_late_str = f"{very_late:,}" if very_late is not None else "0"
+    routes_str = str(routes) if routes is not None else "—"
+
+    if is_partial_day:
+        now_et_hhmm = datetime.now(ET).strftime("%H:%M")
+        opener = f"As of {now_et_hhmm} ET, system-wide on-time performance sits at {otp}%"
+    else:
+        opener = f"System-wide on-time performance closed at {otp}%"
+
+    return (
+        f"{opener} across {pings_str} moving-bus pings on {routes_str} active "
+        f"routes, with average adherence at {avg_delay} minutes and {very_late_str} "
+        f"pings logged more than 15 minutes behind schedule. That makes it {verdict} "
+        f"for riders by the headline numbers, with the route-by-route picture below "
+        f"telling a more uneven story."
+    )
 
 
 def parse_response(text):
@@ -493,6 +564,21 @@ def generate_daily_insights(
         log.info("Raw Claude response generated.")
 
         narrative, tweet, headline = parse_response(raw_response)
+
+        # Inject the deterministic system-summary paragraph between Claude's
+        # hook (paragraph 1) and route-level paragraph (paragraph 2). This
+        # is what guarantees the narrative's system numbers match the KPI
+        # strip — Claude only writes about ROUTES, the system numbers are
+        # rendered here from the same snapshot dict that gets persisted.
+        summary_para = build_summary_paragraph(kpi_snapshot, is_partial_day=is_today)
+        if summary_para:
+            paragraphs = [p.strip() for p in narrative.split("\n\n") if p.strip()]
+            if len(paragraphs) >= 1:
+                paragraphs.insert(1, summary_para)
+                narrative = "\n\n".join(paragraphs)
+            else:
+                narrative = summary_para + "\n\n" + narrative
+
         log.info("Stored Headline: %s", headline)
 
         with conn.cursor() as cur:

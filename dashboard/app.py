@@ -86,8 +86,19 @@ OTP_CATEGORY_ORDER = ["Good (≥80%)", "Mixed (60–79%)", "Poor (<60%)", "No da
 
 
 def format_route(route_id, route_name) -> str:
-    """Format route as '<bus#> — <name>'. Locals know buses by number first."""
-    rid = "" if route_id is None else str(route_id).strip()
+    """Format route as '<bus#> — <name>'. Locals know buses by number first.
+
+    Strips a trailing '.0' so route IDs that were JSON-serialised as floats
+    in the kpi_snapshot ("5.0", "26.0") render as plain "5", "26".
+    """
+    if route_id is None:
+        rid = ""
+    elif isinstance(route_id, float) and route_id.is_integer():
+        rid = str(int(route_id))
+    else:
+        rid = str(route_id).strip()
+        if rid.endswith(".0") and rid[:-2].lstrip("-").isdigit():
+            rid = rid[:-2]
     rname = "" if route_name is None else str(route_name).strip()
     if rid and rname and rid != rname:
         return f"{rid} — {rname}"
