@@ -1727,6 +1727,98 @@ with tab_daily:
                                 st.error(f"Unexpected status: {status}")
                         except Exception as exc:
                             st.error(f"Regeneration failed: {exc}")
+
+        # ── Downloads ────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("##### Downloads")
+        dl_col1, dl_col2 = st.columns(2)
+
+        with dl_col1:
+            # Silver CSV: every moving-bus ping for the selected day,
+            # excluding synthetic routes, with ET-adjusted timestamp.
+            silver_csv_sql = """
+                SELECT
+                    (observed_at AT TIME ZONE 'America/New_York') AS observed_at_et,
+                    route_id, route_name, vehicle_id, trip_id, direction,
+                    latitude, longitude, speed,
+                    adherence_minutes, delay_bucket, display_status,
+                    is_on_route, hour_of_day, day_name
+                FROM silver_arrivals
+                WHERE (observed_at AT TIME ZONE 'America/New_York')::date = %s
+                  AND speed > 2
+                  AND route_id NOT IN (98, 99, 999)
+                ORDER BY observed_at_et
+            """
+            silver_rows = run_query(silver_csv_sql, [selected_day])
+            if silver_rows:
+                import io as _io, csv as _csv
+                buf = _io.StringIO()
+                writer = _csv.DictWriter(buf, fieldnames=list(silver_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(silver_rows)
+                st.download_button(
+                    label=f"Download Silver CSV ({len(silver_rows):,} pings)",
+                    data=buf.getvalue().encode(),
+                    file_name=f"emta_silver_{selected_day}.csv",
+                    mime="text/csv",
+                    key="dl_silver_csv",
+                    use_container_width=True,
+                )
+            else:
+                st.caption("No silver data available for this date.")
+
+        with dl_col2:
+            # Full report: headline + KPIs + hourly arc + worst routes + narrative,
+            # assembled as plain-text markdown. Self-contained and readable offline.
+            lines = [
+                f"# EMTA Daily Digest — {selected_day}",
+                f"**{ins.get('headline_text') or 'Daily summary'}**",
+                "",
+            ]
+            if kpi and kpi.get("otp_pct") is not None:
+                lines += [
+                    "## Key Performance Indicators",
+                    f"- On-Time %: {kpi['otp_pct']}%",
+                    f"- Avg Delay: {kpi['avg_delay']} min",
+                    f"- Active Routes: {kpi['active_routes']}",
+                    f"- Very Late Pings: {kpi['very_late']}",
+                    "",
+                ]
+            if snap_dict and snap_dict.get("hourly_arc"):
+                lines.append("## Hourly On-Time % Arc")
+                lines.append("Hour | On-Time %")
+                lines.append("-----|----------")
+                for h in snap_dict["hourly_arc"]:
+                    lines.append(f"{int(h['hour']):02d}   | {h['on_time_pct']:.1f}%")
+                lines.append("")
+            if snap_dict and snap_dict.get("worst_routes"):
+                lines.append("## Top 3 Problem Routes")
+                lines.append("Route | Reliability | Avg Delay | Pings")
+                lines.append("------|-------------|-----------|------")
+                for r in snap_dict["worst_routes"]:
+                    rname = r.get("route_name") or ""
+                    rid = r.get("route_id") or ""
+                    label = f"{rid} {rname}".strip()
+                    lines.append(
+                        f"{label} | {r.get('reliability')}/100 | "
+                        f"{r.get('avg_delay')} min | {r.get('pings')}"
+                    )
+                lines.append("")
+            narrative_txt = ins.get("narrative") or ""
+            if narrative_txt:
+                lines += ["## AI Narrative", "", narrative_txt, ""]
+            if snap_stamp_caption:
+                lines.append(f"*{snap_stamp_caption}*")
+            report_text = "\n".join(lines)
+            st.download_button(
+                label="Download full report (.txt)",
+                data=report_text.encode(),
+                file_name=f"emta_digest_{selected_day}.txt",
+                mime="text/plain",
+                key="dl_full_report",
+                use_container_width=True,
+            )
+
     else:
         st.warning(f"No digest yet for {selected_day}.")
         if st.button("Generate digest", key="generate_daily"):
