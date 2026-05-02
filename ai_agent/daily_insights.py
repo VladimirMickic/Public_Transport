@@ -46,12 +46,34 @@ def get_default_date() -> date:
 
 
 def is_service_idle(conn) -> bool:
-    """Return True when no moving buses have been seen in the last 45 minutes."""
+    """Return True when passenger service appears to have ended for the day.
+
+    Two-tier signal:
+
+    1. Hard wall-clock floor: any time at or after 23:00 ET counts as
+       idle, regardless of API noise. Empirically the Avail feed keeps
+       echoing non-zero speeds on passenger routes well past midnight
+       (deadhead returns, stale GPS at depot, last-known-speed echoes),
+       which left the previous bronze-only check firing "buses still
+       active" indefinitely — 0 auto-digests in 13K+ pipeline runs.
+
+    2. Below 23:00 ET, count moving pings in the last 45 minutes from
+       bronze, but exclude:
+         - synthetic non-passenger routes (98 AM Tripper, 99 PM Tripper,
+           999 Deadhead) — consistent with every other analytics query
+         - speed ≤ 5 mph — above GPS jitter / parked-bus drift
+         - is_on_route = FALSE — buses sitting at depot
+       If zero qualifying pings, treat as idle.
+    """
+    if datetime.now(ET).hour >= 23:
+        return True
     with conn.cursor() as cur:
         cur.execute("""
             SELECT COUNT(*) FROM bronze_vehicle_pings
             WHERE observed_at >= NOW() - INTERVAL '45 minutes'
-              AND speed > 2
+              AND speed > 5
+              AND is_on_route = TRUE
+              AND route_id NOT IN (98, 99, 999)
         """)
         return cur.fetchone()[0] == 0
 

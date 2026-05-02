@@ -372,18 +372,6 @@ if direction_choice != "All":
     )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "<div style='font-size:0.78em; color:#9ca3af; border:1px solid rgba(120,120,130,0.35); "
-    "border-radius:6px; padding:8px 10px; background:rgba(24,26,32,0.6);'>"
-    "<b style='color:#d1d5db;'>Reliability score</b><br>"
-    "70% on-time share + 30% delay-symmetry penalty. "
-    "Running early hurts as much as running late — a bus that leaves early strands waiting riders. "
-    "Adherence capped at 30 min so ghost trips can't collapse a score to zero. "
-    "100 = perfect · 0 = severely off-schedule."
-    "</div>",
-    unsafe_allow_html=True,
-)
-st.sidebar.markdown("---")
 st.sidebar.caption("Data sourced from EMTA Avail API")
 st.sidebar.caption("Updated every 5 minutes")
 st.sidebar.caption("Built by Vladimir · [GitHub](https://github.com/VladimirMickic/Public_Transport)")
@@ -1384,6 +1372,16 @@ with tab_weekly:
 # TAB 4: Daily Digest
 # ══════════════════════════════════════════════════════════
 with tab_daily:
+    # Streamlit forbids writing to a widget's session_state key after the
+    # widget has been instantiated in the same script run. The archive
+    # table at the bottom of this tab needs to jump the date picker to a
+    # selected row, so it writes a *pending* key and reruns; we drain it
+    # into the picker's key here, BEFORE the date_input is created.
+    if "daily_digest_pending_date" in st.session_state:
+        st.session_state["daily_digest_date"] = st.session_state.pop(
+            "daily_digest_pending_date"
+        )
+
     st.markdown(
         "<h1 style='text-align:center; font-size:2.4em; margin: 0 0 4px;'>"
         "Today on the Streets of Erie</h1>"
@@ -1792,7 +1790,11 @@ with tab_daily:
             try:
                 picked_date = datetime.strptime(picked, "%Y-%m-%d").date()
                 if picked_date != selected_day:
-                    st.session_state["daily_digest_date"] = picked_date
+                    # Cannot write to "daily_digest_date" here: the
+                    # date_input widget with that key was already
+                    # instantiated above. Stash in a pending key; the
+                    # top of the tab drains it on the next run.
+                    st.session_state["daily_digest_pending_date"] = picked_date
                     st.rerun()
             except ValueError:
                 pass
