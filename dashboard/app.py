@@ -1391,13 +1391,20 @@ with tab_daily:
         unsafe_allow_html=True,
     )
     st.subheader("📅 AI Daily Digest")
-    st.caption("Metrics exclude pings where the bus is parked (speed ≤ 2 mph).")
+    st.caption(
+        "Metrics exclude pings where the bus is parked (speed ≤ 2 mph). "
+        "Data is only available from **April 19, 2026** onward — earlier dates "
+        "have no ingested pings."
+    )
 
     # ── Pick a date and fetch/generate its digest ────────
     # Use ET (not UTC / server-local) so "today" flips at midnight in Erie.
     today_et_date = datetime.now(ZoneInfo("America/New_York")).date()
     picker_max = today_et_date
-    picker_min = picker_max - timedelta(days=60)
+    # Hard floor: ingestion started 2026-04-19, so any earlier pick would
+    # render an empty digest and confuse the user.
+    DATA_START = date(2026, 4, 19)
+    picker_min = max(picker_max - timedelta(days=60), DATA_START)
     selected_day = st.date_input(
         "Pick a date",
         value=picker_max,
@@ -1784,18 +1791,33 @@ with tab_daily:
         )
         # Selecting a row jumps the date picker to that date, which
         # lazy-renders the full digest at the top of the tab.
+        #
+        # `st.dataframe` keeps its selection state across reruns: once the
+        # user clicks a row, `sel.selection.rows` stays pointed at that row
+        # on every subsequent rerun until they click another. Without the
+        # `last_applied` guard below, manually changing the date picker
+        # would rerun the page, the still-selected archive row would be
+        # detected as "different from the picker", and we'd shove the old
+        # date back into the picker — clobbering whatever the user just
+        # typed. Track the date this handler last pushed and only act when
+        # the archive selection differs from THAT, not from the picker.
         sel_rows = (sel.selection.rows if sel and sel.selection else [])
         if sel_rows:
             picked = archive_rows[sel_rows[0]]["Date"]
             try:
                 picked_date = datetime.strptime(picked, "%Y-%m-%d").date()
-                if picked_date != selected_day:
-                    # Cannot write to "daily_digest_date" here: the
-                    # date_input widget with that key was already
-                    # instantiated above. Stash in a pending key; the
-                    # top of the tab drains it on the next run.
-                    st.session_state["daily_digest_pending_date"] = picked_date
-                    st.rerun()
+                last_applied = st.session_state.get(
+                    "daily_archive_last_applied"
+                )
+                if picked_date != last_applied:
+                    st.session_state["daily_archive_last_applied"] = picked_date
+                    if picked_date != selected_day:
+                        # Cannot write to "daily_digest_date" here: the
+                        # date_input widget with that key was already
+                        # instantiated above. Stash in a pending key; the
+                        # top of the tab drains it on the next run.
+                        st.session_state["daily_digest_pending_date"] = picked_date
+                        st.rerun()
             except ValueError:
                 pass
     else:
