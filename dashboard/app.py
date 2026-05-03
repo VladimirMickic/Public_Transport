@@ -412,11 +412,9 @@ with tab_overview:
         )
 
     # ── Key metrics from silver (date-filtered) ──────────
-    # The citywide reliability score uses the same symmetric-adherence
-    # formula as the Gold table and the worst-route banner: 100 minus
-    # 10× the average absolute deviation, clamped to [0, 100], computed
-    # only over moving buses (speed > 2). That way every reliability
-    # number on the page — city, route, route×hour — is comparable.
+    # All reliability numbers on this page use the industry-standard OTP%
+    # formula (TCRP Report 88): on_time_count / total × 100, with the
+    # on-time window defined as -1 min early to +5 min late.
     metrics_sql = f"""
         SELECT
             COUNT(*) AS total_pings,
@@ -425,15 +423,7 @@ with tab_overview:
                 COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
                 / NULLIF(COUNT(*), 0), 1
             ) AS on_time_pct,
-            COUNT(DISTINCT route_id) AS active_routes,
-            GREATEST(0, ROUND(
-                (100 - LEAST(
-                    100,
-                    AVG(LEAST(30, ABS(adherence_minutes))) FILTER (
-                        WHERE speed > 2 AND adherence_minutes IS NOT NULL
-                    ) * 10
-                ))::numeric, 1
-            )) AS city_reliability
+            COUNT(DISTINCT route_id) AS active_routes
         FROM silver_arrivals
         WHERE (observed_at AT TIME ZONE 'America/New_York')::date BETWEEN %s AND %s
         {direction_filter_sql}
@@ -455,32 +445,17 @@ with tab_overview:
         
         delay = float(m['avg_delay']) if m['avg_delay'] is not None else 0
         delay_color = "#22c55e" if delay <= 2 else "#f59e0b" if delay <= 5 else "#ef4444"
-        
-        rel = m['city_reliability']
-        if rel is None:
-            rel_color = "#3b82f6"
-            rel_val = "—"
-        else:
-            rel_val = f"{rel}/100"
-            rel_float = float(rel)
-            rel_color = "#22c55e" if rel_float >= 80 else "#f59e0b" if rel_float >= 60 else "#ef4444"
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             render_kpi("Total Pings", f"{m['total_pings']:,}", "#3b82f6")
         with c2:
-            render_kpi("On-Time %", f"{m['on_time_pct']}%", otp_color)
+            render_kpi("On-Time %", f"{m['on_time_pct']}%", otp_color,
+                       "Industry-standard OTP (TCRP Report 88): % of pings within the -1 min early to +5 min late window.")
         with c3:
             render_kpi("Avg Delay", f"{m['avg_delay']} min", delay_color)
         with c4:
             render_kpi("Active Routes", str(m["active_routes"]), "#3b82f6")
-        with c5:
-            render_kpi(
-                "City Reliability", 
-                rel_val, 
-                rel_color, 
-                "Citywide reliability score over the selected range. 100 minus 10× average |adherence| in minutes, moving buses only. Each ping's |adherence| is clamped at 30 min first, so a handful of buses parked with stale adherence can't drag the whole city score to zero. Updates each 5-min ETL cycle."
-            )
 
         # ── Delay bucket breakdown ───────────────────────
         bucket_sql = f"""
@@ -726,23 +701,20 @@ with tab_overview:
 
         # ── Route reliability ranking ─────────────────────
         # Horizontal bar chart: one row per route, sorted best→worst.
-        # Replaces the route×hour heatmap, which was fundamentally the wrong
-        # tool for an Overview tab — 30 routes × 24 hours produced a 720-cell
-        # matrix that was hard to parse and brittle against sparse data.
-        # The Overview question is "which routes are worst?", not "which hour
-        # is worst for each route?" (that detail lives in Route Detail).
+        # Uses industry-standard OTP% (TCRP Report 88): on_time_count /
+        # total × 100, same formula as the Gold table and KPI strip.
         #
-        # Bound to the sidebar date range so this chart obeys the same
-        # window as the rest of the page (KPIs, banner, trend chart). The
-        # `live=True` (60 s) cache plus the 5-min autorefresh keeps it
-        # current within a minute of each ETL cycle. ET-localised date
-        # comparison matches the convention used everywhere else.
+        # Reads from silver_arrivals (which has delay_bucket) instead of
+        # bronze, so the OTP% here is consistent with every other
+        # reliability number on the page.
+        #
+        # Bound to the sidebar date range. live=True (60s) cache plus the
+        # 5-min autorefresh keeps it current. ET-localised date comparison
+        # matches the convention used everywhere else.
         #
         # Min-ping threshold scales with the selected span — a single-day
         # view requires fewer pings to surface a route, but the noise
-        # caption fires to warn that the ranking is unstable. A multi-week
-        # selection demands proportionally more pings to filter out routes
-        # that only ran once or twice in that window.
+        # caption fires to warn that the ranking is unstable.
         rel_days = (filter_end - filter_start).days + 1
         rel_min_pings = max(5, 2 * rel_days)
         if rel_days <= 2:
@@ -751,31 +723,25 @@ with tab_overview:
                 "bus can swing a route's score by 20+ points. Use the sidebar "
                 "to widen the range for a more stable view."
             )
-        rel_sql = """
-            SELECT route_id, route_name,
-                   CASE WHEN avg_abs_adh IS NULL THEN NULL
-                        ELSE GREATEST(0, ROUND(
-                            (100 - LEAST(100, 10 * avg_abs_adh))::numeric, 1))
-                   END AS reliability_score,
-                   total_pings
-            FROM (
-                SELECT route_id, MAX(route_name) AS route_name,
-                       AVG(LEAST(30, ABS(adherence_minutes))) FILTER (
-                           WHERE speed > 2 AND adherence_minutes IS NOT NULL
-                       ) AS avg_abs_adh,
-                       COUNT(*) AS total_pings
-                FROM bronze_vehicle_pings
-                WHERE (observed_at AT TIME ZONE 'America/New_York')::date
-                      BETWEEN %s AND %s
-                  AND route_id IS NOT NULL
-                  AND route_id NOT IN (0, 98, 99, 999)
-                GROUP BY route_id
-            ) sub
-            WHERE total_pings >= %s
+        rel_sql = f"""
+            SELECT route_id, MAX(route_name) AS route_name,
+                   ROUND(
+                       COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
+                       / NULLIF(COUNT(*), 0), 1
+                   ) AS reliability_score,
+                   COUNT(*) AS total_pings
+            FROM silver_arrivals
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                  BETWEEN %s AND %s
+              AND route_id IS NOT NULL
+              AND route_id NOT IN (0, 98, 99, 999)
+              {direction_filter_sql}
+            GROUP BY route_id
+            HAVING COUNT(*) >= %s
             ORDER BY reliability_score DESC NULLS LAST
         """
         rel_data = run_query(
-            rel_sql, [filter_start, filter_end, rel_min_pings], live=True
+            rel_sql, [filter_start, filter_end] + direction_params + [rel_min_pings], live=True
         )
         if rel_data:
             import pandas as pd
@@ -827,7 +793,7 @@ with tab_overview:
                        else f"{filter_start:%Y-%m-%d} – {filter_end:%Y-%m-%d}")
                 ),
                 labels={
-                    "reliability_score": "Score (0–100)",
+                    "reliability_score": "OTP %",
                     "route_label": "Route",
                     "total_pings": (
                         "Pings (today)" if rel_days == 1
@@ -845,7 +811,7 @@ with tab_overview:
             fig_rel.update_layout(
                 **PLOTLY_LAYOUT,
                 height=max(350, len(df_rel_sorted) * 28 + 80),
-                xaxis=dict(range=[0, 110], title="Reliability Score"),
+                xaxis=dict(range=[0, 110], title="On-Time Performance %"),
                 yaxis=dict(title=""),
                 legend=dict(
                     title=dict(text="Performance", font=dict(color="#e5e7eb")),

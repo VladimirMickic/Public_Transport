@@ -186,9 +186,10 @@ def fetch_kpi_snapshot(conn, report_date: date) -> dict:
         cur.execute(
             """
             SELECT route_id, route_name,
-                   GREATEST(0, ROUND(
-                       (100 - LEAST(100, AVG(LEAST(30, ABS(adherence_minutes))) * 10))::numeric, 1
-                   )) AS reliability,
+                   ROUND(
+                       COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0
+                       / NULLIF(COUNT(*), 0), 1
+                   ) AS reliability,
                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
                    COUNT(*) AS pings
             FROM silver_arrivals
@@ -199,7 +200,8 @@ def fetch_kpi_snapshot(conn, report_date: date) -> dict:
               AND route_id NOT IN ('98', '99', '999')
             GROUP BY route_id, route_name
             HAVING COUNT(*) >= 20
-            ORDER BY AVG(ABS(adherence_minutes)) DESC
+            ORDER BY COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 1.0
+                     / NULLIF(COUNT(*), 0) ASC
             LIMIT 3
             """,
             (report_date, MOVING_SPEED_MPH),

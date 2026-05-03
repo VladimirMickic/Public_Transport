@@ -42,8 +42,9 @@ UPSERT_GOLD = """
             COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0 / COUNT(*), 2
         )                                                           AS on_time_pct,
         ROUND(AVG(adherence_minutes)::numeric, 2)                   AS avg_adherence_minutes,
-        -- Reliability score = on-time percentage (TCRP Report 88 definition:
-        -- on time = between 1 min early and 5 min late at a timepoint).
+        -- Reliability score = OTP% (TCRP Report 88 / industry standard).
+        -- On-time window: 1 min early to 5 min late at timepoint.
+        -- Formula: on_time_count / total_observations × 100.
         ROUND(
             COUNT(*) FILTER (WHERE delay_bucket = 'on_time') * 100.0 / COUNT(*),
             2
