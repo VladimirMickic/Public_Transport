@@ -8,6 +8,7 @@ Usage:
 """
 from __future__ import annotations
 
+import html
 import os
 import sys
 from datetime import date, datetime, timedelta
@@ -715,7 +716,7 @@ with tab_overview:
                     <span style="font-size:1.2em;">⚠️</span>
                     <span>
                       <b>Worst peak-hour route</b> &nbsp;·&nbsp;
-                      {route_label} at {hour_label}
+                      {html.escape(route_label)} at {hour_label}
                       &nbsp;·&nbsp; avg <b>{delay_display} min</b> {direction_word}
                       across <b>{w['total_pings']:,}</b> pings
                     </span>
@@ -1374,7 +1375,7 @@ with tab_weekly:
             f"<div style='padding:16px 20px; background:rgba(59,130,246,0.08); "
             f"border-radius:8px; border:1px solid rgba(59,130,246,0.3); margin-bottom:12px;'>"
             f"<span style='font-size:1.6em; font-weight:700; color:#e5e7eb;'>"
-            f"📰 {headline[0]['headline_text']}</span></div>",
+            f"📰 {html.escape(headline[0]['headline_text'])}</span></div>",
             unsafe_allow_html=True,
         )
 
@@ -1540,7 +1541,7 @@ with tab_daily:
             f"text-transform:uppercase; margin-bottom:6px;'>"
             f"{severity_label} · {selected_day}</div>"
             f"<div style='font-size:1.6em; font-weight:700; line-height:1.4;'>"
-            f"{headline_txt}</div>"
+            f"{html.escape(headline_txt)}</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
