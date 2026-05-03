@@ -126,7 +126,7 @@ The daily agent is **cache-first on demand**. Once a date has been generated, ev
 
 Two things I had to build because Claude wouldn't behave:
 
-**A KPI snapshot freeze.** Every digest stamps a `kpi_snapshot` JSONB blob with the exact numbers Claude saw at generation time. The dashboard renders the narrative, KPI tiles, hourly arc, and worst-routes table all from this same blob. Without it, the narrative says "OTP 68.1%" and the KPI strip says "69.3%" five minutes later because the 5-minute ETL rebuilt Silver in between. Riders kept reporting it as a bug. The snapshot makes the digest a frozen artefact; live numbers live on the Overview tab.
+**A KPI snapshot freeze.** Every digest stamps a `kpi_snapshot` JSONB blob with the exact numbers Claude saw at generation time. The dashboard renders the narrative, KPI tiles, hourly arc, and worst-routes table all from this same blob. Without it, the narrative says "OTP 68.1%" and the KPI strip says "69.3%" five minutes later because the 5-minute ETL rebuilt Silver in between. The snapshot makes the digest a frozen artefact, live numbers live on the Overview tab.
 
 **A scrub-and-inject pass.** Claude was instructed in the prompt not to cite system-wide totals, because it would hallucinate them every time (saw 72.2% in the prompt, wrote 73.8% in the output). It ignored the instruction. So the post-processing detects any paragraph that smells like a system-stats paragraph (giveaway phrases plus a percent sign), drops it, and inserts a deterministic summary built from the snapshot. The narrative now cannot disagree with the KPI strip, mathematically.
 
@@ -153,7 +153,6 @@ A few things that look small but mattered:
 - All date comparisons use `(observed_at AT TIME ZONE 'America/New_York')::date`. Raw `observed_at::date` returns UTC, and UTC midnight is 8 PM ET, so pings from 8–11 PM ET get stamped with the wrong calendar date and show up as phantom bars for hours that haven't happened yet. This took a global replace across 17 occurrences once I figured it out.
 - Routes 98 (AM Tripper), 99 (PM Tripper), and 999 (Deadhead) are excluded from every analytics query. They're synthetic non-passenger routes with no schedule to adhere to, and including them distorts every aggregate.
 - Route lists sort numerically, not alphabetically. Route labels start with the number, so a string sort puts route 105 before route 3, which is how no rider thinks about the network. A small `_route_sort_key` helper parses numeric prefixes and sorts them as ints.
-- DB-derived strings rendered through `unsafe_allow_html=True` go through `html.escape()` first. The threat is small (no auth, public read-only data), but the upstream API is third-party and I would rather not have a route name with angle brackets break the page.
 
 ---
 
@@ -162,10 +161,6 @@ A few things that look small but mattered:
 The diagnosis is usually the interesting part with this kind of project. A few of the worse ones:
 
 **Reliability score stuck at 0/100 (since fixed).** An earlier version of this project used a custom penalty formula (`100 - 10 × avg |adherence|`) instead of industry-standard OTP%. About 10% of pings reported absolute adherence over 30 minutes (stale counters, ghost trips), which dragged the average past 12 minutes and floored the score at zero. The fix was to abandon the custom formula entirely and switch to straight OTP% (on-time count / total × 100), which is what transit authorities actually report. The old formula was clever but unbenchmarkable; OTP% is universally understood.
-
-**Phantom bars for future hours.** Route Detail charts at 7 PM ET showed authentic-looking bars for hours 20, 21, 22 (hours that hadn't started yet). UTC vs ET, again. After 8 PM ET it's already tomorrow in UTC, so last night's late-evening pings landed in today's filter. Silver's `hour_of_day` column was correct (it stored the ET hour), which is why the bars looked real. The fix was the global timezone replace mentioned above.
-
-**Heatmap painting central Erie bright red regardless of delay.** `px.density_mapbox` does a 2-D kernel density estimate weighted by the z value, so a thousand on-time pings clustered downtown integrated to a huge weight even though every individual ping was fine. The map was accurately drawing ping density and I was reading it as delay. Switched to `px.scatter_mapbox` with one dot per ping, color keyed to route. Different chart, no KDE distortion.
 
 **Date picker silently running 30-day SQL on single-day picks.** `st.date_input` returns a bare `date` for single-date mode and a tuple for range mode. The sidebar only handled the tuple case and fell back to a 30-day default for everything else, which meant every single-date selection was running 30 days of SQL behind the scenes. Fix: handle all four return shapes (`tuple[2]`, `tuple[1]`, bare `date`, fallback) and collapse single-day picks to `(day, day)`.
 
@@ -246,7 +241,6 @@ streamlit run dashboard/app.py             # open the dashboard
 - **GTFS schedule integration.** Cross-referencing scheduled trips with live adherence would let the pipeline discard ghost trips more precisely than the current speed filter.
 - **Threshold alerts.** A lightweight notification when a route drops below some reliability number during peak hours. Useful for transit advocates more than riders.
 - **Daily pre-aggregation table.** Silver grows month over month and the daily AI agent will eventually start scanning slowly. A daily summary table would keep both the Claude context and the queries fast.
-- **Per-stop reliability.** Right now the unit of analysis is the route. With the Avail stop list and a small spatial join it could be the stop, which is what a rider actually cares about.
 
 ---
 
