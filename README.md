@@ -17,7 +17,7 @@ I rode the Erie bus every day and had no idea whether it would show up on time. 
 
 There was no answer to that anywhere. So I built one.
 
-The result is a system that collects every bus position every 5 minutes, scores per-route reliability the way a rider actually feels it, and writes its own daily and weekly summaries when the buses stop running. It is also the most I have ever learned in a single project about timezone bugs.
+The result is a system that collects every bus position every 5 minutes, scores per-route reliability using the same on-time performance formula transit authorities use nationally, and writes its own daily and weekly summaries when the buses stop running. It is also the most I have ever learned in a single project about timezone bugs.
 
 ---
 
@@ -37,7 +37,7 @@ If a section below sounds interesting, it is probably that section.
 
 ## How it works
 
-Every 5 minutes, three Python scripts run in sequence. They hit EMTA's Avail InfoPoint API, dump the raw response into PostgreSQL, clean it, and roll it up into a per-route-per-hour-per-day reliability score. A Streamlit dashboard reads from the database. A Claude agent reads the worst buckets and writes a plain-English digest when someone asks for one, or once at end-of-service automatically.
+Every 5 minutes, three Python scripts run in sequence. They hit EMTA's Avail InfoPoint API, dump the raw response into PostgreSQL, clean it, and roll it up into a per-route-per-hour-per-day on-time performance score. A Streamlit dashboard reads from the database. A Claude agent reads the worst buckets and writes a plain-English digest when someone asks for one, or once at end-of-service automatically.
 
 There is no backend server, no message queue, no ORM, no Kubernetes. Three Python scripts, one Postgres database, one Streamlit app, two cron runners. That is the whole thing.
 
@@ -69,7 +69,7 @@ The data moves through three layers, each one progressively cleaner and smaller.
 
 **Silver (`silver_arrivals`)** is the cleaned version. UTC timestamps converted to Eastern Time, parked buses filtered out (speed below 2 mph), each ping tagged with a delay bucket (`early`, `on_time`, `late`, `very_late`). Still row-per-ping so downstream queries can aggregate however they want.
 
-**Gold (`gold_route_reliability`)** is the rollup, grouped by `(route_id, hour_of_day, day_of_week)` with a single composite reliability score per bucket. There is no date column here. Gold is a lifetime aggregate, rewritten every run via `ON CONFLICT (...) DO UPDATE`. The dashboard reads from Gold and gets sub-second responses on aggregates that would otherwise scan millions of Silver rows.
+**Gold (`gold_route_reliability`)** is the rollup, grouped by `(route_id, hour_of_day, day_of_week)` with OTP% (on-time performance percentage) per bucket. There is no date column here. Gold is a lifetime aggregate, rewritten every run via `ON CONFLICT (...) DO UPDATE`. The dashboard reads from Gold and gets sub-second responses on aggregates that would otherwise scan millions of Silver rows.
 
 Each layer has one job. If Silver has a bug, Gold is wrong but Bronze is still the source of truth and you rebuild upward. The point of the pattern is that you can never end up in a state where the original data is gone.
 
@@ -77,17 +77,26 @@ Each layer has one job. If Silver has a bug, Gold is wrong but Bronze is still t
 
 ## The reliability score
 
+Every reliability number in this project uses the same formula that transit authorities across North America report: **On-Time Performance percentage (OTP%)**.
+
 ```
-score = 100 - 10 * AVG(LEAST(30, |adherence_minutes|))
+OTP% = (on-time observations / total observations) × 100
 ```
 
-Plainly: take the absolute deviation from schedule for every moving-bus ping, cap each value at 30 minutes, average them, multiply by 10, subtract from 100. Clamp the result to [0, 100].
+This is the industry-standard metric defined in **TCRP Report 88** (*A Guidebook for Developing a Transit Performance-Measurement System*), published by the Transportation Research Board. There is no single federal mandate, but TCRP Report 88 is what agencies like WMATA, AC Transit, TriMet, and dozens of others base their service standards on.
 
-Two things in this formula are not obvious and matter a lot.
+**What counts as "on time."** A bus ping is classified as on-time if its schedule adherence falls within **1 minute early to 5 minutes late**. This matches the most common threshold used across the industry. A bus that departs 2 minutes early strands any rider who planned around the posted schedule, so it does not count as on time. A bus 6 minutes late has crossed the threshold where riders start missing transfers, so it does not count either.
 
-**Why ABS instead of GREATEST.** Adherence is signed: negative is early, positive is late. Early is *worse* for a rider than late, because a bus that leaves before you arrive strands you completely; a late bus just makes you wait. Using `GREATEST(x, 0)` would give a chronically 5-minutes-early route a perfect score, which is wrong. ABS treats both directions the same.
+The full delay classification (defined in `ingestion/config.py`):
 
-**Why the 30-minute cap.** Raw adherence in the Avail feed sometimes hits 200 or 300 minutes (buses with stale counters, ghost trips that never got cleared, last-known-speed echoes at depot). Without a cap, that 1% of bad pings drags the citywide average past 12 minutes and pins the entire reliability score at 0/100. Each individual ping is clamped at 30 *before* averaging. A bus 30 minutes late is a real failure; 200 minutes is data garbage. After this fix went in, the citywide score read 47/100 instead of 0/100.
+| Bucket | Adherence window |
+|---|---|
+| `early` | More than 1 minute early |
+| `on_time` | 1 minute early to 5 minutes late |
+| `late` | 5 to 15 minutes late |
+| `very_late` | More than 15 minutes late |
+
+The Silver layer tags every ping with one of these buckets. Gold, the dashboard, and the AI agents all compute OTP% the same way: count the `on_time` pings, divide by total pings, multiply by 100. One formula, everywhere, benchmarkable against any peer agency that uses the same TCRP standard.
 
 ---
 
@@ -129,7 +138,7 @@ The function returns one of five sentinel strings (`generated`, `regenerated`, `
 
 Five tabs, one sidebar with a date picker and a direction filter.
 
-**Overview** is the citywide snapshot. KPI strip (total pings, on-time %, avg delay, active routes, city reliability), a delay distribution pie, an adaptive trend chart that switches granularity based on the selected range (hourly for one day, 6-hour blocks for 2–4 days, daily after that), and a horizontal bar chart ranking every route by reliability for the chosen window. There is also a "worst peak-hour route" callout that reads from Silver, so it actually responds to the date picker instead of repeating yesterday's banner forever.
+**Overview** is the citywide snapshot. KPI strip (total pings, on-time %, avg delay, active routes), a delay distribution pie, an adaptive trend chart that switches granularity based on the selected range (hourly for one day, 6-hour blocks for 2–4 days, daily after that), and a horizontal bar chart ranking every route by OTP% for the chosen window. There is also a "worst peak-hour route" callout that reads from Silver, so it actually responds to the date picker instead of repeating yesterday's banner forever.
 
 **Route Detail** lets you pick a single route and see hourly on-time % and average delay broken out side by side. Hours are cast to zero-padded strings (`"07"`, `"08"`) and passed through Plotly's `category_orders` so sparse routes render uniform-width bars instead of a continuous-axis mess.
 
@@ -152,7 +161,7 @@ A few things that look small but mattered:
 
 The diagnosis is usually the interesting part with this kind of project. A few of the worse ones:
 
-**Reliability score stuck at 0/100.** Symptom: city reliability read 0 even when most buses were obviously on time. Root cause: ~10% of pings reported absolute adherence over 30 minutes, with a max of 345. The unbounded `AVG(|adherence|)` pulled the citywide average past 12 minutes, which floored the original `100 - 10 * AVG(...)` formula at zero. Fix: `LEAST(30, ABS(adherence_minutes))` per ping before averaging. Score went from 0/100 to 47/100.
+**Reliability score stuck at 0/100 (since fixed).** An earlier version of this project used a custom penalty formula (`100 - 10 × avg |adherence|`) instead of industry-standard OTP%. About 10% of pings reported absolute adherence over 30 minutes (stale counters, ghost trips), which dragged the average past 12 minutes and floored the score at zero. The fix was to abandon the custom formula entirely and switch to straight OTP% (on-time count / total × 100), which is what transit authorities actually report. The old formula was clever but unbenchmarkable; OTP% is universally understood.
 
 **Phantom bars for future hours.** Route Detail charts at 7 PM ET showed authentic-looking bars for hours 20, 21, 22 (hours that hadn't started yet). UTC vs ET, again. After 8 PM ET it's already tomorrow in UTC, so last night's late-evening pings landed in today's filter. Silver's `hour_of_day` column was correct (it stored the ET hour), which is why the bars looked real. The fix was the global timezone replace mentioned above.
 
