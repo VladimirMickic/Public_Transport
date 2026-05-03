@@ -110,7 +110,7 @@ A few cron-specific things bit me during setup:
 
 - `cron` runs without a shell profile, so `python3` is not on the PATH. The crontab line uses the absolute virtualenv path: `~/Public_Transport/venv/bin/python`.
 - `python -m ingestion.fetch_realtime` requires the working directory to be the repo root or the package import fails. The crontab prepends `cd $PROJECT_DIR &&` to every command.
-- Cron failures are silent unless you redirect output. Every command appends to `~/pipeline.log` with `>> $LOG 2>&1`.
+
 
 ---
 
