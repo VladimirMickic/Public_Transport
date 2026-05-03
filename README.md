@@ -26,7 +26,6 @@ The result is a system that collects every bus position every 5 minutes, scores 
 A short tour for anyone scanning before reading:
 
 - A working medallion data pipeline (Bronze, Silver, Gold) inside one Postgres database, fully idempotent.
-- A reliability score I had to redesign twice before it stopped lying to me.
 - Two redundant cron runners that share state through database idempotency, not coordination.
 - A Claude integration that costs roughly nothing because every digest is cache-first on demand.
 - A Streamlit dashboard with five tabs, all reading from the same database, all timezone-correct.
