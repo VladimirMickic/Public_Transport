@@ -89,6 +89,7 @@ PRUNE_LINE="15 3 * * * cd $PROJECT_DIR && $PYTHON -m maintenance.prune_old_data 
 # we catch every variant of the cron line that has ever shipped.
 (crontab -l 2>/dev/null \
     | grep -v "fetch_realtime" \
+    | grep -v "run_pipeline" \
     | grep -v "ai_agent.daily_insights" \
     | grep -v "ai_agent.insights" \
     | grep -v "maintenance.prune_old_data"; \
