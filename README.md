@@ -242,7 +242,7 @@ streamlit run dashboard/app.py             # open the dashboard
 
 ---
 
-## Limitations, honestly
+## Limitations
 
 - The polling interval is 5 minutes, so anything faster than that is invisible. A bus that was 30 seconds late and then on time again never registered.
 - No weather, no holidays, no school calendar. A snowstorm and a normal Tuesday look identical to the database.
