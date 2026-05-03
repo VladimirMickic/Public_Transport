@@ -7,7 +7,7 @@ A live data pipeline and dashboard for the Erie Metropolitan Transit Authority b
 [![AI](https://img.shields.io/badge/AI-Anthropic_Claude-171515.svg)](https://www.anthropic.com/)
 [![Dashboard](https://img.shields.io/badge/Dashboard-Streamlit-FF4B4B.svg)](https://streamlit.io/)
 
-Live dashboard: [emta-tracker.streamlit.app](https://emta-tracker.streamlit.app/) · Auto-deploys from `main`.
+Live dashboard: [emta-tracker.streamlit.app](https://erietransit.streamlit.app/) · Auto-deploys from `main`.
 
 ---
 
