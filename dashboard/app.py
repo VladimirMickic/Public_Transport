@@ -978,17 +978,63 @@ with tab_route:
                 )
 
             with col_h2:
+                # Colour each hour's bar by which delay bucket its avg_delay
+                # falls into, using the same thresholds as the silver layer
+                # (ingestion/config.py: early < -1, on_time ≤ 5, late ≤ 15,
+                # very_late > 15) and the dashboard-wide COLORS palette.
+                def _bucket_label(d):
+                    if d is None:
+                        return "On-Time (−1 to +5 min)"
+                    d = float(d)
+                    if d < -1:
+                        return "Early (< −1 min)"
+                    if d <= 5:
+                        return "On-Time (−1 to +5 min)"
+                    if d <= 15:
+                        return "Late (+5 to +15 min)"
+                    return "Very Late (> +15 min)"
+
+                bucket_color_map = {
+                    "Early (< −1 min)":         COLORS["early"],
+                    "On-Time (−1 to +5 min)":   COLORS["on_time"],
+                    "Late (+5 to +15 min)":     COLORS["late"],
+                    "Very Late (> +15 min)":    COLORS["very_late"],
+                }
+                bucket_order = [
+                    "Early (< −1 min)",
+                    "On-Time (−1 to +5 min)",
+                    "Late (+5 to +15 min)",
+                    "Very Late (> +15 min)",
+                ]
+                for row in hourly:
+                    row["delay_bucket_label"] = _bucket_label(row["avg_delay"])
+
                 fig_d = px.bar(
                     hourly, x="hour_label", y="avg_delay",
                     title=f"{selected_route_name} — Avg Delay by Hour",
-                    labels={"hour_label": "Hour", "avg_delay": "Avg Delay (min)"},
-                    color_discrete_sequence=["#f59e0b"],
-                    category_orders={"hour_label": hour_order},
+                    labels={
+                        "hour_label": "Hour",
+                        "avg_delay": "Avg Delay (min)",
+                        "delay_bucket_label": "Delay bucket",
+                    },
+                    color="delay_bucket_label",
+                    color_discrete_map=bucket_color_map,
+                    category_orders={
+                        "hour_label": hour_order,
+                        "delay_bucket_label": bucket_order,
+                    },
                 )
                 fig_d.update_layout(
                     **PLOTLY_LAYOUT,
                     bargap=0.15,
                     xaxis=dict(type="category"),
+                    legend=dict(
+                        title="",
+                        orientation="h",
+                        yanchor="bottom", y=-0.32,
+                        xanchor="center", x=0.5,
+                        bgcolor="rgba(24,26,32,0.0)",
+                    ),
                 )
                 st.plotly_chart(
                     fig_d, use_container_width=True,
@@ -1090,6 +1136,7 @@ with tab_map:
                 WHERE observed_at >= NOW() - INTERVAL '15 minutes'
                   AND latitude IS NOT NULL
                   AND longitude IS NOT NULL
+                  AND adherence_minutes IS NOT NULL
                   AND route_id NOT IN ('98', '99', '999')
                   {direction_filter_sql}
             )
@@ -1112,19 +1159,16 @@ with tab_map:
                 "Early": 9,
                 "Late": 15,
                 "Very Late": 22,
-                "Unknown": 7,
             }
-            status_counts = {b: 0 for b in ["On Time", "Early", "Late", "Very Late", "Unknown"]}
+            status_counts = {b: 0 for b in ["On Time", "Early", "Late", "Very Late"]}
             for v in live:
                 v["route_label"] = format_route(v.get("route_id"), v.get("route_name"))
                 # Derive a clean status bucket from adherence so "Very Late"
                 # gets its own red dot. Avail's DisplayStatus only emits
                 # "On Time" / "Early" / "Late", which collapses the worst
                 # delays into the same amber as a 6-min late bus.
-                adh = v.get("adherence_minutes")
-                if adh is None:
-                    v["status_bucket"] = "Unknown"
-                elif adh < -1:
+                adh = v["adherence_minutes"]
+                if adh < -1:
                     v["status_bucket"] = "Early"
                 elif adh <= 5:
                     v["status_bucket"] = "On Time"
@@ -1134,9 +1178,8 @@ with tab_map:
                     v["status_bucket"] = "Very Late"
                 v["size_weight"] = SIZE_BY_STATUS[v["status_bucket"]]
                 status_counts[v["status_bucket"]] += 1
-            live_for_map = [v for v in live if v["status_bucket"] != "Unknown"]
             fig_map = px.scatter_mapbox(
-                live_for_map,
+                live,
                 lat="latitude",
                 lon="longitude",
                 hover_name="route_label",

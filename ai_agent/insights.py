@@ -48,13 +48,20 @@ def already_generated(conn, week_start):
 
 
 def fetch_gold_summary(conn):
-    """Fetch aggregated reliability data for Claude's context."""
+    """Fetch aggregated reliability data for Claude's context.
+
+    Excludes synthetic non-passenger routes (98 AM Tripper, 99 PM
+    Tripper, 999 Deadhead) — they have no schedule to adhere to and
+    their stale adherence counters always rank as the "worst" buckets
+    even though no rider is affected.
+    """
     sql = """
         SELECT route_name, day_name, hour_of_day,
                total_pings, on_time_pct, avg_adherence_minutes,
                reliability_score
         FROM gold_route_reliability
         WHERE total_pings >= 5
+          AND route_id NOT IN ('98', '99', '999')
         ORDER BY reliability_score ASC
         LIMIT 40
     """
@@ -160,8 +167,15 @@ def fetch_weekly_kpi_snapshot(conn, week_start) -> dict:
     }
 
 
-def fetch_system_stats(conn):
-    """Fetch high-level system stats for the narrative."""
+def fetch_system_stats(conn, week_start):
+    """Fetch high-level system stats for the narrative.
+
+    Window is the same Mon–Sun (ET) range used by the KPI snapshot, so
+    the narrative numbers always agree with the dashboard's KPI strip.
+    Filters mirror the snapshot (speed > 2, ET timezone) and excludes
+    synthetic routes 98/99/999 from counts.
+    """
+    week_end = week_start + timedelta(days=6)
     sql = """
         SELECT
             COUNT(*) AS total_pings,
@@ -173,15 +187,33 @@ def fetch_system_stats(conn):
             ) AS system_on_time_pct,
             COUNT(*) FILTER (WHERE delay_bucket = 'very_late') AS very_late_count
         FROM silver_arrivals
-        WHERE observed_at >= NOW() - INTERVAL '7 days'
+        WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+              BETWEEN %s AND %s
+          AND speed > 2
+          AND route_id NOT IN ('98', '99', '999')
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(sql)
+        cur.execute(sql, (week_start, week_end))
         return cur.fetchone()
 
 
-def build_prompt(gold_data, system_stats):
-    """Build the Claude prompt with real data."""
+def build_prompt(gold_data, system_stats, week_start):
+    """Build the Claude prompt with real data.
+
+    System-wide numbers are passed for situational awareness only —
+    Claude is forbidden from citing them in its output. A deterministic
+    executive-summary paragraph is inserted programmatically after
+    Claude's hook (see _scrub_and_inject_summary). Even with strong
+    "quote verbatim" instructions Claude reliably hallucinated weekly
+    system numbers (saw 71% in prompt, wrote 73.5% in narrative), and
+    riders flagged the mismatch against the dashboard KPI strip. Same
+    guardrail the daily digest uses.
+    """
+    week_end = week_start + timedelta(days=6)
+    week_label = (
+        f"{week_start.strftime('%B %d, %Y')} – {week_end.strftime('%B %d, %Y')}"
+    )
+
     # Format gold data as a readable table
     data_lines = []
     for row in gold_data:
@@ -197,29 +229,70 @@ def build_prompt(gold_data, system_stats):
     stats = system_stats or {}
 
     prompt = f"""You are a transit data analyst writing a weekly reliability report for the
-Erie Metropolitan Transit Authority (EMTA) in Erie, PA.
+Erie Metropolitan Transit Authority (EMTA) in Erie, PA. Your audience is EMTA
+leadership and engaged riders who want real numbers, not corporate filler.
 
-Here is this week's system-wide performance:
+The report covers the week of {week_label}.
+
+System-wide context for this week (moving buses only, synthetic routes
+excluded). These numbers are shown to you ONLY for situational awareness —
+DO NOT cite or repeat any of them in your output. A separate executive-summary
+paragraph quoting these numbers will be inserted automatically.
 - Total vehicle pings tracked: {stats.get('total_pings', 'N/A')}
 - Active routes: {stats.get('routes', 'N/A')}
 - System-wide on-time percentage: {stats.get('system_on_time_pct', 'N/A')}%
 - Average delay: {stats.get('avg_delay', 'N/A')} minutes
 - Very late incidents (>15 min): {stats.get('very_late_count', 'N/A')}
 
-Here are the 40 worst-performing route/hour/day combinations (sorted by reliability score):
+Here are the 40 worst-performing route/hour/day combinations from this week
+(sorted by reliability score, ascending):
 
 {data_block}
 
 Write three outputs, separated by exact markers:
 
-1. A 3-4 paragraph narrative analysis. You MUST mention at least three specific
-   route numbers/names and at least two specific time windows (e.g., "Route 5
-   at 8am on weekdays"). Identify patterns: which routes struggle, when, and
-   any day-of-week trends. Be specific and data-driven, not generic.
+1. A 3-paragraph narrative. Each paragraph separated by a blank line. Each
+   paragraph must contain AT LEAST 3 SENTENCES.
+   - Paragraph 1 (hook): 3 to 4 sentences. Lead with the single most striking
+     ROUTE-LEVEL fact from the per-route table (a specific route's score,
+     OTP, or avg delay at a specific time window). Build on it with one or
+     two sentences of context. Do NOT cite system-wide totals (total pings,
+     system OTP, system avg delay, very-late count, active route count) —
+     those go in the auto-inserted summary paragraph. No throat-clearing,
+     no "This week's report covers...", no date recap.
+   - Paragraph 2 (route-level): 4 to 6 sentences. You MUST name at least
+     three specific route numbers/names in **bold** and at least two
+     specific time windows (e.g. "Route 5 at 8am on weekdays"). Cite
+     per-route OTP, avg delay, and reliability scores from the table above.
+     Compare two routes against each other to give the reader scale. If a
+     route shows a wildly negative average delay (e.g. -100+ min), flag it
+     as a likely data-reporting glitch rather than real early arrivals.
+   - Paragraph 3 (insight): 3 to 5 sentences. What patterns repeat across
+     the week — afternoon corridor drag, weekday peaks, a specific
+     route/time combo that keeps showing up? End with a concrete takeaway
+     for an EMTA dispatcher or a regular rider planning their week. Do NOT
+     cite system-wide totals here either.
+
+   WRITING RULES — read carefully:
+   - Vary sentence length. Short punchy ones. Longer ones that build context.
+   - Have opinions. "That is a brutal number" beats "This represents a
+     significant challenge."
+   - Be specific. Exact percentages and route names beat "some routes struggled."
+   - No em dashes. Use commas, periods, or parentheses instead.
+   - Avoid these words entirely: pivotal, underscores, testament, showcasing,
+     vibrant, crucial, vital, reflects broader, highlights the importance,
+     ensuring, fostering, encompasses, landscape, realm, delve, tapestry.
+   - No rule-of-three patterns ("speed, precision, and efficiency").
+   - End on a concrete observation, never a vague hopeful statement.
+   - Never mention or name routes 98 (AM Tripper), 99 (PM Tripper), or 999
+     (Deadhead). They are synthetic non-passenger routes with no schedule
+     and are excluded from every aggregate above. If you see "Tripper" or
+     "Deadhead" anywhere in the data block, ignore those rows entirely.
 
 2. After the marker ---TWEET--- on its own line, write a single tweet (≤280
    characters) summarizing the key finding. Include one specific route and
-   one specific number. No hashtags.
+   one specific number from the per-route table (not a system-wide total).
+   No hashtags.
 
 3. After the marker ---HEADLINE--- on its own line, write a one-sentence
    headline (≤100 characters, no hashtags) suitable for an email subject line.
@@ -227,6 +300,120 @@ Write three outputs, separated by exact markers:
 Start the narrative immediately — no preamble or title."""
 
     return prompt
+
+
+# Phrases that strongly indicate a paragraph is Claude's hallucinated
+# system-stats paragraph (which we want to replace with our deterministic
+# build_summary_paragraph output). Mirrors the daily digest's filter and
+# adds weekly-specific phrasing ("this week", "across the week").
+_SYSTEM_STATS_GIVEAWAYS = (
+    "system-wide",
+    "system performance",
+    "across all routes",
+    "across the network",
+    "across the week",
+    "this week emta",
+    "vehicle pings",
+    "tracked so far",
+    "tracked across",
+    "very late incidents",
+    "late incidents",
+    "emta is posting",
+    "emta tracked",
+    "system on-time",
+    "system-level",
+)
+
+
+def _looks_like_system_stats_paragraph(paragraph: str) -> bool:
+    """True if the paragraph reads like Claude's hallucinated stats paragraph.
+
+    Requires both a system-stats giveaway phrase AND a percent sign — the
+    combination distinguishes a stats paragraph from a route-level paragraph
+    that happens to mention "system" in passing.
+    """
+    if not paragraph:
+        return False
+    lower = paragraph.lower()
+    if "%" not in lower:
+        return False
+    return any(phrase in lower for phrase in _SYSTEM_STATS_GIVEAWAYS)
+
+
+def build_summary_paragraph(snapshot: dict, week_start) -> str:
+    """Deterministic executive-summary paragraph built from the snapshot.
+
+    Inserted between Claude's hook and route-level paragraphs so the
+    system-wide numbers in the narrative are mathematically guaranteed
+    to match the KPI strip on the dashboard.
+    """
+    snap = snapshot or {}
+
+    def _int(v):
+        try:
+            return int(round(float(v)))
+        except (TypeError, ValueError):
+            return None
+
+    def _f1(v):
+        try:
+            return f"{float(v):.1f}"
+        except (TypeError, ValueError):
+            return None
+
+    otp        = _f1(snap.get("otp_pct"))
+    avg_delay  = _f1(snap.get("avg_delay"))
+    pings      = _int(snap.get("total_pings"))
+    routes     = _int(snap.get("active_routes"))
+    very_late  = _int(snap.get("very_late"))
+
+    if otp is None or pings is None:
+        return ""
+
+    otp_val = float(otp)
+    if otp_val >= 80:
+        verdict = "a strong week"
+    elif otp_val >= 60:
+        verdict = "a mixed week"
+    else:
+        verdict = "a poor week"
+
+    pings_str = f"{pings:,}"
+    very_late_str = f"{very_late:,}" if very_late is not None else "0"
+    routes_str = str(routes) if routes is not None else "—"
+    week_end = week_start + timedelta(days=6)
+    week_label = (
+        f"{week_start.strftime('%b %d')}–{week_end.strftime('%b %d')}"
+    )
+
+    avg_phrase = (
+        f"Average adherence ran {avg_delay} minutes off schedule"
+        if avg_delay is not None
+        else "Average adherence data is unavailable"
+    )
+
+    return (
+        f"For the week of {week_label}, system-wide on-time performance "
+        f"closed at {otp}% across {pings_str} moving-bus pings on "
+        f"{routes_str} active routes — {verdict}. {avg_phrase}, with "
+        f"{very_late_str} pings logged more than 15 minutes late."
+    )
+
+
+def _scrub_and_inject_summary(narrative: str, snapshot: dict, week_start) -> str:
+    """Drop Claude's hallucinated stats paragraph(s) and insert our own."""
+    summary_para = build_summary_paragraph(snapshot, week_start)
+    paragraphs = [p.strip() for p in (narrative or "").split("\n\n") if p.strip()]
+    cleaned = [p for p in paragraphs if not _looks_like_system_stats_paragraph(p)]
+
+    if not summary_para:
+        return "\n\n".join(cleaned) if cleaned else (narrative or "")
+
+    if not cleaned:
+        return summary_para
+
+    cleaned.insert(1, summary_para) if len(cleaned) >= 1 else cleaned.append(summary_para)
+    return "\n\n".join(cleaned)
 
 
 def parse_response(text):
@@ -283,10 +470,10 @@ def generate_insights():
         conn.close()
         return
 
-    system_stats = fetch_system_stats(conn)
+    system_stats = fetch_system_stats(conn, week_start)
     weekly_snapshot = fetch_weekly_kpi_snapshot(conn, week_start)
     snapshot_json = json.dumps(weekly_snapshot, default=str)
-    prompt = build_prompt(gold_data, system_stats)
+    prompt = build_prompt(gold_data, system_stats, week_start)
 
     # Call Claude
     log.info("Calling Claude for week of %s ...", week_start)
@@ -299,8 +486,10 @@ def generate_insights():
     raw_response = message.content[0].text
     log.info("Raw Claude response:\n%s", raw_response)
 
-    # Parse
+    # Parse, then scrub any hallucinated system-stats paragraph and
+    # inject the deterministic summary built from the KPI snapshot.
     narrative, tweet, headline = parse_response(raw_response)
+    narrative = _scrub_and_inject_summary(narrative, weekly_snapshot, week_start)
     log.info("Narrative length: %d chars", len(narrative))
     log.info("Tweet (%d chars): %s", len(tweet), tweet)
     log.info("Headline (%d chars): %s", len(headline), headline)
