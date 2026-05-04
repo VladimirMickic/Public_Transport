@@ -589,19 +589,19 @@ with tab_overview:
                         df_trend["x_label"] = df_trend["bucket_key"].apply(
                             lambda h: f"{int(h):02d}:00"
                         )
-                        # Force service-hours slots (04:00–23:00) so the line
+                        # Force service-hours slots (05:00–23:00) so the line
                         # spans the EMTA operating window. Missing hours plot as
-                        # gaps, not compressed points. Hours 00–03 are cut because
+                        # gaps, not compressed points. Hours 00–04 are cut because
                         # EMTA has no overnight service and they just add noise.
                         full_hours = pd.DataFrame({
-                            "x_label": [f"{h:02d}:00" for h in range(4, 24)],
+                            "x_label": [f"{h:02d}:00" for h in range(5, 24)],
                         })
                         df_trend = full_hours.merge(df_trend, on="x_label", how="left")
                         x_col, x_label = "x_label", "Hour (ET)"
                         xaxis_cfg = dict(
                             type="category",
                             categoryorder="array",
-                            categoryarray=[f"{h:02d}:00" for h in range(4, 24)],
+                            categoryarray=[f"{h:02d}:00" for h in range(5, 24)],
                         )
                     elif grain == "6h":
                         df_trend["bucket_ts"] = pd.to_datetime(
