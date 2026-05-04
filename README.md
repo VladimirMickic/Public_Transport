@@ -1,4 +1,4 @@
-# EMTA Transit Reliability Tracker 🚌 
+# EMTA Transit Reliability Tracker  🚌 
 
 A live data pipeline and dashboard for the Erie Metropolitan Transit Authority bus network. Pulls GPS positions from EMTA's API every 5 minutes, scores reliability per route per hour per day, and lets a Claude backed agent write the daily and weekly digests.
 
