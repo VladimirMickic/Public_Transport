@@ -608,11 +608,27 @@ with tab_overview:
                             df_trend["bucket_day"]
                         ) + pd.to_timedelta(df_trend["bucket_hour"], unit="h")
                         x_col, x_label = "bucket_ts", "Window start (ET)"
-                        xaxis_cfg = dict(type="date", tickformat="%m/%d %H:00")
+                        # Force a tick at every 6h window (00/06/12/18) so each
+                        # plotted dot gets its own label — Plotly's auto-tick
+                        # otherwise picks 12h spacing and hides the 06:00/18:00
+                        # points behind unlabelled gridlines.
+                        xaxis_cfg = dict(
+                            type="date",
+                            tickmode="array",
+                            tickvals=df_trend["bucket_ts"].tolist(),
+                            tickformat="%m/%d<br>%H:00",
+                        )
                     else:
                         df_trend["bucket_ts"] = pd.to_datetime(df_trend["bucket_day"])
                         x_col, x_label = "bucket_ts", "Date"
-                        xaxis_cfg = dict(type="date", tickformat="%b %d")
+                        # Force a tick per day so each dot is labelled — Plotly's
+                        # auto-tick drops every other date for ~10-day ranges.
+                        xaxis_cfg = dict(
+                            type="date",
+                            tickmode="array",
+                            tickvals=df_trend["bucket_ts"].tolist(),
+                            tickformat="%b %d",
+                        )
 
                     fig_trend = px.line(
                         df_trend, x=x_col, y="pct",
