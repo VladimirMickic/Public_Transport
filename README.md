@@ -156,16 +156,6 @@ A few things that look small but mattered:
 
 ---
 
-## Bugs worth mentioning
-
-The diagnosis is usually the interesting part with this kind of project. A few of the worse ones:
-
-**Date picker silently running 30-day SQL on single-day picks.** `st.date_input` returns a bare `date` for single date mode and a tuple for range mode. The sidebar only handled the tuple case and fell back to a 30-day default for everything else, which meant every single-date selection was running 30 days of SQL behind the scenes. Fix: handle all four return shapes (`tuple[2]`, `tuple[1]`, bare `date`, fallback) and collapse single-day picks to `(day, day)`.
-
-**Daily digest narrative drifting from KPIs by 1–2 percentage points.** Claude saw a number when it generated, the dashboard re queried Silver when a user opened the page later, and the 5-minute ETL had landed new rows in between. Claude was right at the moment of writing, the KPI strip was right at the moment of viewing, both were "correct," and the page looked broken. Fix described in *The AI layer* above: freeze a snapshot at generation time, render every visible number from the snapshot, never re query.
-
----
-
 ## Tech stack
 
 | Concern | Tool |
