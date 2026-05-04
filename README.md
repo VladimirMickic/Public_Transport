@@ -69,7 +69,7 @@ The data moves through three layers, each one progressively cleaner and smaller.
 
 **Silver (`silver_arrivals`)** is the cleaned version. UTC timestamps converted to Eastern Time, parked buses filtered out (speed below 2 mph), each ping tagged with a delay bucket (`early`, `on_time`, `late`, `very_late`). Still row-per-ping so downstream queries can aggregate however they want.
 
-**Gold (`gold_route_reliability`)** is the rollup, grouped by `(route_id, hour_of_day, day_of_week)` with OTP% (on-time performance percentage) per bucket. There is no date column here. Gold is a lifetime aggregate, rewritten every run via `ON CONFLICT (...) DO UPDATE`. The dashboard reads from Gold and gets sub-second responses on aggregates that would otherwise scan millions of Silver rows.
+**Gold (`gold_route_reliability`)** is the rollup, grouped by `(route_id, hour_of_day, day_of_week)` with OTP% (on time performance percentage) per bucket. There is no date column here. Gold is a lifetime aggregate, rewritten every run via `ON CONFLICT (...) DO UPDATE`. The dashboard reads from Gold and gets sub second responses on aggregates that would otherwise scan millions of Silver rows.
 
 Each layer has one job. If Silver has a bug, Gold is wrong but Bronze is still the source of truth and you rebuild upward. The point of the pattern is that you can never end up in a state where the original data is gone.
 
