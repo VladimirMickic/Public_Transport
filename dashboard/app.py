@@ -391,7 +391,7 @@ st.caption("Erie Metropolitan Transit Authority · Real-time performance analyti
 # Daily home; weekly gets its own tab so it isn't buried below the date
 # picker.
 tab_overview, tab_route, tab_map, tab_daily, tab_weekly = st.tabs(
-    ["📊 Overview", "🔍 Route Detail", "🗺️ Live Map",
+    ["📊 Overview", "🔍 Route Detail", "🗺️ Route Corridor",
      "🤖 Daily Digest", "📰 Weekly Digest"]
 )
 
@@ -1083,133 +1083,157 @@ with tab_route:
 
 
 # ══════════════════════════════════════════════════════════
-# TAB 3: Live Map
+# TAB 3: Route Corridor
 # ══════════════════════════════════════════════════════════
 with tab_map:
-    st.subheader("Live Vehicle Map")
+    st.subheader("Route Corridor")
 
-    map_mode = st.toggle("Show route corridor (uses sidebar date filter)", value=False)
-
-    if not map_mode:
-        # ── Current vehicles (last 15 min of bronze) ─────
-        st.caption(
-            "Showing vehicles from the last 15 minutes. "
-            "The sidebar date picker does not apply here — this view is always live. "
-            "The Direction filter does apply."
+    # Single map only — the live current-positions map was removed because
+    # it duplicated EMTA's own emtaerie.com tracker without adding any
+    # reliability signal. The corridor map answers "where does THIS route
+    # get stuck?" which is the question the rest of the dashboard exists
+    # to answer.
+    if filter_start == filter_end:
+        corridor_caption_date = filter_start.strftime("%b %d, %Y")
+    else:
+        corridor_caption_date = (
+            f"{filter_start.strftime('%b %d')} – {filter_end.strftime('%b %d, %Y')}"
         )
-        # Parked-bus guard: show each vehicle's most recent ping, but only
-        # if that vehicle has *moved* (max speed > 2 mph) in the last 15 min.
-        # Pings arrive every ~5 min (one cron cycle), so a single-ping speed
-        # check would hide every bus stopped at a red light or dwelling at a
-        # stop. Looking at the rolling 15-min max distinguishes genuine
-        # in-service buses (which move at some point in any 15-min window)
-        # from depot idlers whose stale adherence counters would otherwise
-        # paint them red on the live map.
-        live_sql = f"""
-            WITH recent AS (
-                SELECT vehicle_id, route_id, route_name, latitude, longitude,
-                       adherence_minutes, display_status, speed, vehicle_name,
-                       observed_at,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY vehicle_id
-                           ORDER BY observed_at DESC
-                       ) AS rn,
-                       MAX(speed) OVER (PARTITION BY vehicle_id) AS recent_max_speed
-                FROM bronze_vehicle_pings
-                WHERE observed_at >= NOW() - INTERVAL '15 minutes'
-                  AND latitude IS NOT NULL
-                  AND longitude IS NOT NULL
-                  AND adherence_minutes IS NOT NULL
-                  AND route_id NOT IN ('98', '99', '999')
-                  {direction_filter_sql}
-            )
-            SELECT vehicle_id, route_id, route_name, latitude, longitude,
-                   adherence_minutes, display_status, speed, vehicle_name,
-                   observed_at
-            FROM recent
-            WHERE rn = 1
-              AND recent_max_speed > 2
-        """
-        live = run_query(live_sql, direction_params, live=True)
 
-        if live:
-            # Size encoding: late/very-late buses render larger so problem
-            # vehicles draw the eye first. Same status colour scheme as before;
-            # this layers severity onto an additional channel without changing
-            # the design language.
-            SIZE_BY_STATUS = {
-                "On Time": 9,
-                "Early": 9,
-                "Late": 15,
-                "Very Late": 22,
-            }
-            status_counts = {b: 0 for b in ["On Time", "Early", "Late", "Very Late"]}
-            for v in live:
-                v["route_label"] = format_route(v.get("route_id"), v.get("route_name"))
-                # Derive a clean status bucket from adherence so "Very Late"
-                # gets its own red dot. Avail's DisplayStatus only emits
-                # "On Time" / "Early" / "Late", which collapses the worst
-                # delays into the same amber as a 6-min late bus.
-                adh = v["adherence_minutes"]
+    # Route picker — populated from Silver rows in the selected date
+    # range so the dropdown only lists routes that actually ran.
+    corridor_routes_sql = f"""
+        SELECT DISTINCT route_id, route_name
+        FROM silver_arrivals
+        WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+              BETWEEN %s AND %s
+          AND route_name IS NOT NULL
+          AND route_id NOT IN ('98', '99', '999')
+          {direction_filter_sql}
+    """
+    corridor_routes = run_query(
+        corridor_routes_sql, [filter_start, filter_end] + direction_params
+    )
+
+    if not corridor_routes:
+        st.info(f"No route data for {corridor_caption_date}.")
+    else:
+        def _corridor_sort_key(r):
+            rid = "" if r.get("route_id") is None else str(r["route_id"]).strip()
+            try:
+                return (0, int(float(rid)), rid)
+            except (TypeError, ValueError):
+                return (1, 0, rid.lower())
+        corridor_routes = sorted(corridor_routes, key=_corridor_sort_key)
+        route_labels = [
+            format_route(r["route_id"], r["route_name"]) for r in corridor_routes
+        ]
+        label_to_id = {
+            format_route(r["route_id"], r["route_name"]): r["route_id"]
+            for r in corridor_routes
+        }
+        picked_label = st.selectbox(
+            "Route", route_labels, key="corridor_route_picker"
+        )
+        picked_route_id = label_to_id[picked_label]
+
+        st.caption(
+            f"Route corridor for **{picked_label}** ({corridor_caption_date}). "
+            "Each dot is a ~100m segment along the route's actual path. "
+            "Color = adherence bucket (🟢 on time, 🔵 early, 🟠 late, 🔴 very late). "
+            "Size = ping count for context."
+        )
+
+        # Constrain aggregation to one route so the dots trace the
+        # corridor instead of carpeting the whole map. HAVING >= 3
+        # filters out cells with so few pings that one stuck bus could
+        # decide the bucket — keeps the map to stretches with real
+        # repeated signal.
+        corridor_sql = f"""
+            SELECT
+                ROUND(latitude::numeric, 3)  AS lat_grid,
+                ROUND(longitude::numeric, 3) AS lon_grid,
+                COUNT(*)                     AS pings,
+                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay
+            FROM silver_arrivals
+            WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                  BETWEEN %s AND %s
+              AND route_id = %s
+              AND latitude IS NOT NULL
+              AND longitude IS NOT NULL
+              AND adherence_minutes IS NOT NULL
+              {direction_filter_sql}
+            GROUP BY lat_grid, lon_grid
+            HAVING COUNT(*) >= 3
+        """
+        corridor = run_query(
+            corridor_sql,
+            [filter_start, filter_end, picked_route_id] + direction_params,
+        )
+
+        if not corridor:
+            st.info(f"No corridor data for {picked_label} on {corridor_caption_date}.")
+        else:
+            # Bucket each cell's avg_delay using the same thresholds Silver
+            # applies per ping (see ingestion/config.py). Discrete buckets
+            # are far easier to read than the previous continuous gradient
+            # — the eye sees four distinct colors instead of a fuzzy spectrum.
+            bucket_counts = {"On Time": 0, "Early": 0, "Late": 0, "Very Late": 0}
+            for r in corridor:
+                adh = float(r["avg_delay"])
                 if adh < -1:
-                    v["status_bucket"] = "Early"
+                    r["delay_bucket"] = "Early"
                 elif adh <= 5:
-                    v["status_bucket"] = "On Time"
+                    r["delay_bucket"] = "On Time"
                 elif adh <= 15:
-                    v["status_bucket"] = "Late"
+                    r["delay_bucket"] = "Late"
                 else:
-                    v["status_bucket"] = "Very Late"
-                v["size_weight"] = SIZE_BY_STATUS[v["status_bucket"]]
-                status_counts[v["status_bucket"]] += 1
-            fig_map = px.scatter_mapbox(
-                live,
-                lat="latitude",
-                lon="longitude",
-                hover_name="route_label",
-                hover_data={
-                    "vehicle_name": True,
-                    "adherence_minutes": ":.1f",
-                    "display_status": False,
-                    "speed": ":.1f",
-                    "status_bucket": True,
-                    "size_weight": False,
-                    "latitude": False,
-                    "longitude": False,
+                    r["delay_bucket"] = "Very Late"
+                bucket_counts[r["delay_bucket"]] += 1
+
+            # Center the camera on the route's centroid so small routes
+            # (downtown loops) aren't lost in the default Erie view.
+            lat_center = sum(r["lat_grid"] for r in corridor) / len(corridor)
+            lon_center = sum(r["lon_grid"] for r in corridor) / len(corridor)
+
+            fig_corridor = px.scatter_mapbox(
+                corridor,
+                lat="lat_grid",
+                lon="lon_grid",
+                color="delay_bucket",
+                size="pings",
+                size_max=20,
+                zoom=12,
+                height=600,
+                title=f"Corridor — {picked_label}",
+                category_orders={
+                    "delay_bucket": ["On Time", "Early", "Late", "Very Late"]
                 },
-                labels={
-                    "vehicle_name": "Vehicle",
-                    "adherence_minutes": "Adherence (min)",
-                    "status_bucket": "Status",
-                    "speed": "Speed (mph)",
-                },
-                color="status_bucket",
-                category_orders={"status_bucket": ["On Time", "Early", "Late", "Very Late"]},
                 color_discrete_map={
-                    "On Time": "#22c55e",
-                    "Early": "#3b82f6",
-                    "Late": "#f59e0b",
+                    "On Time":   "#22c55e",
+                    "Early":     "#3b82f6",
+                    "Late":      "#f59e0b",
                     "Very Late": "#ef4444",
                 },
-                size="size_weight",
-                size_max=22,
-                zoom=11,
-                height=600,
-                title="Live EMTA Vehicles",
+                hover_data={
+                    "delay_bucket": True,
+                    "avg_delay": ":.1f",
+                    "pings": True,
+                    "lat_grid": False,
+                    "lon_grid": False,
+                },
+                labels={
+                    "delay_bucket": "Adherence",
+                    "avg_delay":    "Avg delay (min)",
+                    "pings":        "Pings",
+                },
             )
-            # scattermapbox.Marker doesn't support a `line` (border) attribute,
-            # so opacity is the only knob we have to make overlapping bubbles
-            # readable. 0.78 keeps every dot legible on its own while letting
-            # stacked bubbles show through each other.
-            fig_map.update_traces(marker=dict(opacity=0.78))
-            fig_map.update_layout(
-                # Both map views (live + today's activity) share the same
-                # darkish-gray basemap so switching the toggle doesn't flash
-                # between a light page and a near-black page. Dark-matter is
-                # the darkest neutral Plotly provides without a Mapbox token.
+            fig_corridor.update_traces(marker=dict(opacity=0.85))
+            fig_corridor.update_layout(
                 mapbox_style="carto-darkmatter",
-                mapbox_center={"lat": 42.129, "lon": -80.085},
+                mapbox_center={"lat": lat_center, "lon": lon_center},
                 legend=dict(
-                    title=dict(text="Status", font=dict(color="#e5e7eb")),
+                    title=dict(text="Adherence", font=dict(color="#e5e7eb")),
                     bgcolor="rgba(24, 26, 32, 0.85)",
                     bordercolor="rgba(120, 120, 130, 0.5)",
                     borderwidth=1,
@@ -1217,16 +1241,15 @@ with tab_map:
                 ),
                 **PLOTLY_LAYOUT,
             )
-            st.plotly_chart(fig_map, use_container_width=True)
+            st.plotly_chart(fig_corridor, use_container_width=True)
 
-            # Status-count strip — same colour vocabulary as the dots, so the
-            # map and the strip read as one component. Shows the operator
-            # how the live fleet is distributed at a glance.
+            # Bucket-count strip — mirrors the colour vocabulary in the map
+            # so the eye reads the corridor and the strip as one component.
             stat_cols = st.columns(4)
             stat_meta = [
-                ("On Time", "#22c55e"),
-                ("Early", "#3b82f6"),
-                ("Late", "#f59e0b"),
+                ("On Time",   "#22c55e"),
+                ("Early",     "#3b82f6"),
+                ("Late",      "#f59e0b"),
                 ("Very Late", "#ef4444"),
             ]
             for col, (label, color) in zip(stat_cols, stat_meta):
@@ -1235,174 +1258,34 @@ with tab_map:
                     f"border-left:3px solid {color}; "
                     f"background:rgba(24,26,32,0.6); border-radius:4px;'>"
                     f"<div style='font-size:11px; color:#a1a1aa; "
-                    f"text-transform:uppercase; letter-spacing:0.5px;'>{label}</div>"
+                    f"text-transform:uppercase; letter-spacing:0.5px;'>"
+                    f"{label} segments</div>"
                     f"<div style='font-size:22px; color:{color}; "
-                    f"font-weight:bold; line-height:1.2;'>{status_counts[label]}</div>"
+                    f"font-weight:bold; line-height:1.2;'>{bucket_counts[label]}</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
 
-            latest = max((v["observed_at"] for v in live if v.get("observed_at")), default=None)
-            if latest is not None:
-                latest_et = latest.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
-                st.caption(f"🕑 Most recent ping: {latest_et} ET · {len(live)} vehicles shown")
-        else:
-            st.info("No live vehicles right now. Buses typically run 6 AM – 10 PM ET on weekdays.")
-
-    else:
-        # ── Route corridor map — trace a single route's path, colour each
-        # ~100m segment by its average adherence on that stretch.
-        # Replaces the previous "activity by route" cloud-of-dots view: with
-        # one route at a time the corridor becomes visible (Route 5 from
-        # downtown to Hamot, Route 3 down Peach), and the colour answers
-        # "where does THIS route get stuck?" rather than the unanswerable
-        # "what colour was that dot." Honours the sidebar date filter.
-        if filter_start == filter_end:
-            corridor_caption_date = filter_start.strftime("%b %d, %Y")
-        else:
-            corridor_caption_date = (
-                f"{filter_start.strftime('%b %d')} – {filter_end.strftime('%b %d, %Y')}"
-            )
-
-        # Route picker — populated from Silver rows in the selected date
-        # range so the dropdown only lists routes that actually ran.
-        corridor_routes_sql = f"""
-            SELECT DISTINCT route_id, route_name
-            FROM silver_arrivals
-            WHERE (observed_at AT TIME ZONE 'America/New_York')::date
-                  BETWEEN %s AND %s
-              AND route_name IS NOT NULL
-              AND route_id NOT IN ('98', '99', '999')
-              {direction_filter_sql}
-        """
-        corridor_routes = run_query(
-            corridor_routes_sql, [filter_start, filter_end] + direction_params
-        )
-
-        if not corridor_routes:
-            st.info(f"No route data for {corridor_caption_date}.")
-        else:
-            def _corridor_sort_key(r):
-                rid = "" if r.get("route_id") is None else str(r["route_id"]).strip()
-                try:
-                    return (0, int(float(rid)), rid)
-                except (TypeError, ValueError):
-                    return (1, 0, rid.lower())
-            corridor_routes = sorted(corridor_routes, key=_corridor_sort_key)
-            route_labels = [
-                format_route(r["route_id"], r["route_name"]) for r in corridor_routes
-            ]
-            label_to_id = {
-                format_route(r["route_id"], r["route_name"]): r["route_id"]
-                for r in corridor_routes
-            }
-            picked_label = st.selectbox(
-                "Route", route_labels, key="corridor_route_picker"
-            )
-            picked_route_id = label_to_id[picked_label]
-
-            st.caption(
-                f"Route corridor for **{picked_label}** ({corridor_caption_date}). "
-                "Each dot is a ~100m segment along the route's actual path — "
-                "color = avg adherence at that segment (🟢 on time → 🔴 late), "
-                "size = ping count. Late stretches show you exactly where the "
-                "route falls behind."
-            )
-
-            # Same per-grid aggregation as before, but constrained to one
-            # route so the dots trace the corridor instead of carpeting the
-            # whole map.
-            corridor_sql = f"""
-                SELECT
-                    ROUND(latitude::numeric, 3)  AS lat_grid,
-                    ROUND(longitude::numeric, 3) AS lon_grid,
-                    COUNT(*)                     AS pings,
-                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay
-                FROM silver_arrivals
-                WHERE (observed_at AT TIME ZONE 'America/New_York')::date
-                      BETWEEN %s AND %s
-                  AND route_id = %s
-                  AND latitude IS NOT NULL
-                  AND longitude IS NOT NULL
-                  AND adherence_minutes IS NOT NULL
-                  {direction_filter_sql}
-                GROUP BY lat_grid, lon_grid
-                HAVING COUNT(*) >= 2
-            """
-            corridor = run_query(
-                corridor_sql,
-                [filter_start, filter_end, picked_route_id] + direction_params,
-            )
-
-            if not corridor:
-                st.info(f"No corridor data for {picked_label} on {corridor_caption_date}.")
-            else:
-                # Center the camera on the route's centroid so small routes
-                # (downtown loops) aren't lost in the default Erie view.
-                lat_center = sum(r["lat_grid"] for r in corridor) / len(corridor)
-                lon_center = sum(r["lon_grid"] for r in corridor) / len(corridor)
-
-                fig_corridor = px.scatter_mapbox(
-                    corridor,
-                    lat="lat_grid",
-                    lon="lon_grid",
-                    color="avg_delay",
-                    size="pings",
-                    size_max=20,
-                    zoom=12,
-                    height=600,
-                    title=f"Corridor — {picked_label}",
-                    range_color=[-5, 15],
-                    color_continuous_scale=[
-                        (0.00, "#22c55e"),  # ≤ −5 min → green
-                        (0.25, "#22c55e"),  # 0 min → still green
-                        (0.50, "#f59e0b"),  # +5 min → amber
-                        (1.00, "#ef4444"),  # ≥ +15 min → red
-                    ],
-                    hover_data={
-                        "pings": True,
-                        "avg_delay": True,
-                        "lat_grid": False,
-                        "lon_grid": False,
-                    },
-                    labels={"avg_delay": "Avg delay (min)", "pings": "Pings"},
-                )
-                fig_corridor.update_layout(
-                    mapbox_style="carto-darkmatter",
-                    mapbox_center={"lat": lat_center, "lon": lon_center},
-                    coloraxis_colorbar=dict(
-                        title=dict(text="Avg delay (min)",
-                                   font=dict(color="#e5e7eb")),
-                        tickfont=dict(color="#e5e7eb"),
-                        bgcolor="rgba(24, 26, 32, 0.85)",
-                        bordercolor="rgba(120, 120, 130, 0.5)",
-                        borderwidth=1,
-                        thickness=14,
-                        len=0.7,
-                    ),
-                    **PLOTLY_LAYOUT,
-                )
-                st.plotly_chart(fig_corridor, use_container_width=True)
-
-                # Worst-segments table — surfaces the top 5 bottleneck
-                # cells numerically so a dispatcher can read "where does
-                # Route X drop time" without squinting at the map.
-                worst_segments = sorted(
-                    [r for r in corridor if r["avg_delay"] is not None],
-                    key=lambda r: -float(r["avg_delay"]),
-                )[:5]
-                if worst_segments:
-                    st.markdown("**Top 5 late stretches**")
-                    seg_rows = [
-                        {
-                            "Avg delay (min)": f'{float(r["avg_delay"]):+.1f}',
-                            "Pings":           int(r["pings"]),
-                            "Lat":             f'{float(r["lat_grid"]):.3f}',
-                            "Lon":             f'{float(r["lon_grid"]):.3f}',
-                        }
-                        for r in worst_segments
-                    ]
-                    st.dataframe(seg_rows, hide_index=True, width="stretch")
+            # Worst-segments table — surfaces the top 5 bottleneck cells
+            # numerically so a dispatcher can read "where does Route X
+            # drop time" without squinting at the map.
+            worst_segments = sorted(
+                [r for r in corridor if r["avg_delay"] is not None],
+                key=lambda r: -float(r["avg_delay"]),
+            )[:5]
+            if worst_segments:
+                st.markdown("**Top 5 late stretches**")
+                seg_rows = [
+                    {
+                        "Bucket":          r["delay_bucket"],
+                        "Avg delay (min)": f'{float(r["avg_delay"]):+.1f}',
+                        "Pings":           int(r["pings"]),
+                        "Lat":             f'{float(r["lat_grid"]):.3f}',
+                        "Lon":             f'{float(r["lon_grid"]):.3f}',
+                    }
+                    for r in worst_segments
+                ]
+                st.dataframe(seg_rows, hide_index=True, width="stretch")
 
 
 # ══════════════════════════════════════════════════════════
