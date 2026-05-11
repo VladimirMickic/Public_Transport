@@ -1088,7 +1088,7 @@ with tab_route:
 with tab_map:
     st.subheader("Live Vehicle Map")
 
-    map_mode = st.toggle("Show activity by route (uses sidebar date filter)", value=False)
+    map_mode = st.toggle("Show route corridor (uses sidebar date filter)", value=False)
 
     if not map_mode:
         # ── Current vehicles (last 15 min of bronze) ─────
@@ -1250,91 +1250,159 @@ with tab_map:
             st.info("No live vehicles right now. Buses typically run 6 AM – 10 PM ET on weekdays.")
 
     else:
-        # ── Route activity map from silver — honours sidebar date filter ──
+        # ── Route corridor map — trace a single route's path, colour each
+        # ~100m segment by its average adherence on that stretch.
+        # Replaces the previous "activity by route" cloud-of-dots view: with
+        # one route at a time the corridor becomes visible (Route 5 from
+        # downtown to Hamot, Route 3 down Peach), and the colour answers
+        # "where does THIS route get stuck?" rather than the unanswerable
+        # "what colour was that dot." Honours the sidebar date filter.
         if filter_start == filter_end:
-            activity_caption_date = filter_start.strftime("%b %d, %Y")
-            activity_title = f"Activity by Route — {activity_caption_date}"
+            corridor_caption_date = filter_start.strftime("%b %d, %Y")
         else:
-            activity_caption_date = (
+            corridor_caption_date = (
                 f"{filter_start.strftime('%b %d')} – {filter_end.strftime('%b %d, %Y')}"
             )
-            activity_title = f"Activity by Route — {activity_caption_date}"
-        st.caption(
-            f"Each dot is a ~100m grid cell where buses were seen "
-            f"({activity_caption_date}) — color = avg adherence "
-            "(🟢 on time → 🔴 late), size = ping count for context. "
-            "Hover for route and exact delay."
-        )
-        # Aggregate across routes per grid cell so the color encodes
-        # delay severity at that location, not which route happened to
-        # pass through. With per-route color the map was unreadable across
-        # 27 hues; with avg_delay color the map answers a real reliability
-        # question ("where do buses get stuck?") at a glance.
-        heat_sql = f"""
-            SELECT
-                ROUND(latitude::numeric, 3)  AS lat_grid,
-                ROUND(longitude::numeric, 3) AS lon_grid,
-                COUNT(*)                     AS pings,
-                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
-                STRING_AGG(DISTINCT route_name, ', ' ORDER BY route_name) AS routes_here
+
+        # Route picker — populated from Silver rows in the selected date
+        # range so the dropdown only lists routes that actually ran.
+        corridor_routes_sql = f"""
+            SELECT DISTINCT route_id, route_name
             FROM silver_arrivals
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date
                   BETWEEN %s AND %s
-              AND latitude IS NOT NULL
-              AND longitude IS NOT NULL
               AND route_name IS NOT NULL
-              AND adherence_minutes IS NOT NULL
               AND route_id NOT IN ('98', '99', '999')
               {direction_filter_sql}
-            GROUP BY lat_grid, lon_grid
-            HAVING COUNT(*) >= 2
         """
-        heat = run_query(heat_sql, [filter_start, filter_end] + direction_params)
+        corridor_routes = run_query(
+            corridor_routes_sql, [filter_start, filter_end] + direction_params
+        )
 
-        if heat:
-            # Clamp avg_delay to a symmetric [-5, +15] window for the
-            # color scale: anything past +15 already counts as very_late
-            # in our buckets and saturating it at red avoids one outlier
-            # cell flattening the rest of the city to the same hue.
-            fig_hm = px.scatter_mapbox(
-                heat,
-                lat="lat_grid",
-                lon="lon_grid",
-                color="avg_delay",
-                size="pings",
-                size_max=18,
-                zoom=11,
-                height=600,
-                title=activity_title,
-                range_color=[-5, 15],
-                color_continuous_scale=[
-                    (0.00, "#22c55e"),  # −5 min (early-ish) → green
-                    (0.25, "#22c55e"),  # 0 min → still green
-                    (0.50, "#f59e0b"),  # +5 min (edge of on-time) → amber
-                    (1.00, "#ef4444"),  # +15 min and worse → red
-                ],
-                hover_data={"routes_here": True, "pings": True, "avg_delay": True,
-                            "lat_grid": False, "lon_grid": False},
-                labels={"avg_delay": "Avg delay (min)", "routes_here": "Routes",
-                        "pings": "Pings"},
-            )
-            fig_hm.update_layout(
-                mapbox_style="carto-darkmatter",
-                mapbox_center={"lat": 42.129, "lon": -80.085},
-                coloraxis_colorbar=dict(
-                    title=dict(text="Avg delay (min)", font=dict(color="#e5e7eb")),
-                    tickfont=dict(color="#e5e7eb"),
-                    bgcolor="rgba(24, 26, 32, 0.85)",
-                    bordercolor="rgba(120, 120, 130, 0.5)",
-                    borderwidth=1,
-                    thickness=14,
-                    len=0.7,
-                ),
-                **PLOTLY_LAYOUT,
-            )
-            st.plotly_chart(fig_hm, use_container_width=True)
+        if not corridor_routes:
+            st.info(f"No route data for {corridor_caption_date}.")
         else:
-            st.info(f"No activity data for {activity_caption_date}.")
+            def _corridor_sort_key(r):
+                rid = "" if r.get("route_id") is None else str(r["route_id"]).strip()
+                try:
+                    return (0, int(float(rid)), rid)
+                except (TypeError, ValueError):
+                    return (1, 0, rid.lower())
+            corridor_routes = sorted(corridor_routes, key=_corridor_sort_key)
+            route_labels = [
+                format_route(r["route_id"], r["route_name"]) for r in corridor_routes
+            ]
+            label_to_id = {
+                format_route(r["route_id"], r["route_name"]): r["route_id"]
+                for r in corridor_routes
+            }
+            picked_label = st.selectbox(
+                "Route", route_labels, key="corridor_route_picker"
+            )
+            picked_route_id = label_to_id[picked_label]
+
+            st.caption(
+                f"Route corridor for **{picked_label}** ({corridor_caption_date}). "
+                "Each dot is a ~100m segment along the route's actual path — "
+                "color = avg adherence at that segment (🟢 on time → 🔴 late), "
+                "size = ping count. Late stretches show you exactly where the "
+                "route falls behind."
+            )
+
+            # Same per-grid aggregation as before, but constrained to one
+            # route so the dots trace the corridor instead of carpeting the
+            # whole map.
+            corridor_sql = f"""
+                SELECT
+                    ROUND(latitude::numeric, 3)  AS lat_grid,
+                    ROUND(longitude::numeric, 3) AS lon_grid,
+                    COUNT(*)                     AS pings,
+                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay
+                FROM silver_arrivals
+                WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                      BETWEEN %s AND %s
+                  AND route_id = %s
+                  AND latitude IS NOT NULL
+                  AND longitude IS NOT NULL
+                  AND adherence_minutes IS NOT NULL
+                  {direction_filter_sql}
+                GROUP BY lat_grid, lon_grid
+                HAVING COUNT(*) >= 2
+            """
+            corridor = run_query(
+                corridor_sql,
+                [filter_start, filter_end, picked_route_id] + direction_params,
+            )
+
+            if not corridor:
+                st.info(f"No corridor data for {picked_label} on {corridor_caption_date}.")
+            else:
+                # Center the camera on the route's centroid so small routes
+                # (downtown loops) aren't lost in the default Erie view.
+                lat_center = sum(r["lat_grid"] for r in corridor) / len(corridor)
+                lon_center = sum(r["lon_grid"] for r in corridor) / len(corridor)
+
+                fig_corridor = px.scatter_mapbox(
+                    corridor,
+                    lat="lat_grid",
+                    lon="lon_grid",
+                    color="avg_delay",
+                    size="pings",
+                    size_max=20,
+                    zoom=12,
+                    height=600,
+                    title=f"Corridor — {picked_label}",
+                    range_color=[-5, 15],
+                    color_continuous_scale=[
+                        (0.00, "#22c55e"),  # ≤ −5 min → green
+                        (0.25, "#22c55e"),  # 0 min → still green
+                        (0.50, "#f59e0b"),  # +5 min → amber
+                        (1.00, "#ef4444"),  # ≥ +15 min → red
+                    ],
+                    hover_data={
+                        "pings": True,
+                        "avg_delay": True,
+                        "lat_grid": False,
+                        "lon_grid": False,
+                    },
+                    labels={"avg_delay": "Avg delay (min)", "pings": "Pings"},
+                )
+                fig_corridor.update_layout(
+                    mapbox_style="carto-darkmatter",
+                    mapbox_center={"lat": lat_center, "lon": lon_center},
+                    coloraxis_colorbar=dict(
+                        title=dict(text="Avg delay (min)",
+                                   font=dict(color="#e5e7eb")),
+                        tickfont=dict(color="#e5e7eb"),
+                        bgcolor="rgba(24, 26, 32, 0.85)",
+                        bordercolor="rgba(120, 120, 130, 0.5)",
+                        borderwidth=1,
+                        thickness=14,
+                        len=0.7,
+                    ),
+                    **PLOTLY_LAYOUT,
+                )
+                st.plotly_chart(fig_corridor, use_container_width=True)
+
+                # Worst-segments table — surfaces the top 5 bottleneck
+                # cells numerically so a dispatcher can read "where does
+                # Route X drop time" without squinting at the map.
+                worst_segments = sorted(
+                    [r for r in corridor if r["avg_delay"] is not None],
+                    key=lambda r: -float(r["avg_delay"]),
+                )[:5]
+                if worst_segments:
+                    st.markdown("**Top 5 late stretches**")
+                    seg_rows = [
+                        {
+                            "Avg delay (min)": f'{float(r["avg_delay"]):+.1f}',
+                            "Pings":           int(r["pings"]),
+                            "Lat":             f'{float(r["lat_grid"]):.3f}',
+                            "Lon":             f'{float(r["lon_grid"]):.3f}',
+                        }
+                        for r in worst_segments
+                    ]
+                    st.dataframe(seg_rows, hide_index=True, width="stretch")
 
 
 # ══════════════════════════════════════════════════════════
@@ -1720,6 +1788,8 @@ with tab_daily:
                             st.rerun()
                         elif status == "no_data":
                             st.warning(f"No moving-bus data available for {selected_day}.")
+                        elif status == "no_service_day":
+                            st.info(f"EMTA does not operate on Sundays — nothing to regenerate for {selected_day}.")
                         elif status == "missing_env":
                             st.error("Server is missing SUPABASE_DB_URL or ANTHROPIC_API_KEY.")
                         else:
@@ -1759,6 +1829,8 @@ with tab_daily:
                                 st.rerun()
                             elif status == "no_data":
                                 st.warning(f"No moving-bus data available for {selected_day}.")
+                            elif status == "no_service_day":
+                                st.info(f"EMTA does not operate on Sundays — nothing to regenerate for {selected_day}.")
                             elif status == "missing_env":
                                 st.error("Server is missing SUPABASE_DB_URL or ANTHROPIC_API_KEY.")
                             else:

@@ -17,7 +17,7 @@ import os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import anthropic
+import anthropic  # type: ignore[import-not-found]
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
@@ -611,8 +611,18 @@ def generate_daily_insights(
         * manual=False (cron / auto): regenerates, does NOT increment counter.
 
     Returns one of:
-        "generated", "regenerated", "exists", "no_data", "missing_env".
+        "generated", "regenerated", "exists", "no_data", "missing_env",
+        "no_service_day".
     """
+    # Hard block: EMTA does not operate on Sundays. Without this, manual
+    # dashboard clicks or stray cron runs on a Sunday would call Claude
+    # against an empty Silver and produce a hallucinated digest (Claude
+    # fills in plausible-looking numbers when fed an empty data block).
+    # The UI guard catches user clicks; this catches every other entry path.
+    if target_date.weekday() == 6:
+        log.info("Refusing to generate digest for %s: EMTA does not operate Sundays.", target_date)
+        return "no_service_day"
+
     if not SUPABASE_DB_URL or not ANTHROPIC_API_KEY:
         log.error("Missing SUPABASE_DB_URL or ANTHROPIC_API_KEY environment variables.")
         return "missing_env"

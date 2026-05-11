@@ -130,7 +130,9 @@ Two things I had to build because Claude wouldn't behave:
 
 **A scrub-and-inject pass.** Claude was instructed in the prompt not to cite system-wide totals, because it would hallucinate them every time (saw 72.2% in the prompt, wrote 73.8% in the output). It ignored the instruction. So the post processing detects any paragraph that smells like a system stats paragraph (giveaway phrases plus a percent sign), drops it, and inserts a deterministic summary built from the snapshot. The narrative now cannot disagree with the KPI strip, mathematically.
 
-The function returns one of five sentinel strings (`generated`, `regenerated`, `exists`, `no_data`, `missing_env`) instead of raising exceptions, so the Streamlit UI never shows users a stack trace.
+The function returns one of six sentinel strings (`generated`, `regenerated`, `exists`, `no_data`, `missing_env`, `no_service_day`) instead of raising exceptions, so the Streamlit UI never shows users a stack trace.
+
+**Sunday hard-block.** EMTA does not operate on Sundays. Without a guard, a manual "Generate" click on a Sunday date would call Claude against an empty Silver and the model would happily fabricate plausible-looking numbers (this happened twice and both rows had to be deleted from `ai_daily_insights`). The generator now refuses Sundays at the function entry point — before any DB query, before any Claude call — and returns `no_service_day`. Every entry path (UI button, regenerate, end-of-day auto, CLI, cron) inherits the guard from one check.
 
 ---
 
@@ -142,7 +144,7 @@ Five tabs, one sidebar with a date picker and a direction filter.
 
 **Route Detail** lets you pick a single route and see hourly on time % and average delay broken out side by side. Hours are cast to zero-padded strings (`"07"`, `"08"`) and passed through Plotly's `category_orders` so sparse routes render uniform width bars instead of a continuous axis mess.
 
-**Live Map** shows current vehicle positions on a `carto-darkmatter` basemap, colored by adherence status. Toggleable to a "today's activity by route" view where each route gets its own color from the `Light24` palette (the only Plotly palette bright enough on a dark background).
+**Live Map** shows current vehicle positions on a `carto-darkmatter` basemap, colored by adherence status. A toggle switches to a **route corridor view**: pick any route and the map traces its actual path as ~100m segments colored by average adherence (green on time → amber → red late). A "top 5 late stretches" table sits underneath with exact delay and ping count per segment, so a dispatcher can read where the route falls behind without squinting at the map. Replaces an earlier "activity by route" view that tried to color 27 routes simultaneously and was unreadable.
 
 **Daily Digest** is the per day frozen artefact. Severity banner (green, amber, red based on OTP), KPI strip, hourly arc, top 3 worst routes, and the Claude narrative. Past dates always render from the saved snapshot. A "Regenerate" expander re rolls a hallucinated digest and bumps a `generation_count` audit column.
 
