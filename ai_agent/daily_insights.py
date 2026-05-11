@@ -253,6 +253,7 @@ def fetch_daily_summary(conn, report_date):
           AND observed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York' < (%s::date + INTERVAL '1 day')
           AND speed > %s
           AND route_id NOT IN ('98', '99', '999')
+          AND route_name IS NOT NULL
         GROUP BY route_name
         HAVING COUNT(*) >= 5
         ORDER BY avg_delay DESC

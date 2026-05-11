@@ -41,7 +41,7 @@ st.set_page_config(
 # Matches the ETL cadence (GitHub Action runs every 5 min), so a user
 # leaving the tab open always sees fresh numbers without reloading.
 try:
-    from streamlit_autorefresh import st_autorefresh
+    from streamlit_autorefresh import st_autorefresh  # type: ignore[import-not-found]
     st_autorefresh(interval=5 * 60 * 1000, key="dashboard_autorefresh")
 except ImportError:
     st.sidebar.caption(
@@ -1260,63 +1260,75 @@ with tab_map:
             )
             activity_title = f"Activity by Route — {activity_caption_date}"
         st.caption(
-            f"Each dot is a grid cell where a route was seen ({activity_caption_date}) — "
-            "color = route, size = ping count, hover = avg delay."
+            f"Each dot is a ~100m grid cell where buses were seen "
+            f"({activity_caption_date}) — color = avg adherence "
+            "(🟢 on time → 🔴 late), size = ping count for context. "
+            "Hover for route and exact delay."
         )
+        # Aggregate across routes per grid cell so the color encodes
+        # delay severity at that location, not which route happened to
+        # pass through. With per-route color the map was unreadable across
+        # 27 hues; with avg_delay color the map answers a real reliability
+        # question ("where do buses get stuck?") at a glance.
         heat_sql = f"""
             SELECT
-                route_id,
-                route_name,
-                ROUND(latitude::numeric, 3) AS lat_grid,
+                ROUND(latitude::numeric, 3)  AS lat_grid,
                 ROUND(longitude::numeric, 3) AS lon_grid,
-                COUNT(*) AS pings,
-                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay
+                COUNT(*)                     AS pings,
+                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                STRING_AGG(DISTINCT route_name, ', ' ORDER BY route_name) AS routes_here
             FROM silver_arrivals
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date
                   BETWEEN %s AND %s
               AND latitude IS NOT NULL
               AND longitude IS NOT NULL
               AND route_name IS NOT NULL
+              AND adherence_minutes IS NOT NULL
               AND route_id NOT IN ('98', '99', '999')
               {direction_filter_sql}
-            GROUP BY route_id, route_name, lat_grid, lon_grid
+            GROUP BY lat_grid, lon_grid
             HAVING COUNT(*) >= 2
-            ORDER BY route_id
         """
         heat = run_query(heat_sql, [filter_start, filter_end] + direction_params)
 
         if heat:
-            for r in heat:
-                r["route_label"] = format_route(r.get("route_id"), r.get("route_name"))
+            # Clamp avg_delay to a symmetric [-5, +15] window for the
+            # color scale: anything past +15 already counts as very_late
+            # in our buckets and saturating it at red avoids one outlier
+            # cell flattening the rest of the city to the same hue.
             fig_hm = px.scatter_mapbox(
                 heat,
                 lat="lat_grid",
                 lon="lon_grid",
-                color="route_label",
+                color="avg_delay",
                 size="pings",
                 size_max=18,
                 zoom=11,
                 height=600,
                 title=activity_title,
-                # Light24 is designed for dark backgrounds — each hue stays
-                # bright and readable against the dark-matter basemap, so
-                # routes that were hard to spot with Dark24 (16, 14, etc.)
-                # now pop off the map.
-                color_discrete_sequence=px.colors.qualitative.Light24,
-                hover_data={"route_label": True, "pings": True, "avg_delay": True,
+                range_color=[-5, 15],
+                color_continuous_scale=[
+                    (0.00, "#22c55e"),  # −5 min (early-ish) → green
+                    (0.25, "#22c55e"),  # 0 min → still green
+                    (0.50, "#f59e0b"),  # +5 min (edge of on-time) → amber
+                    (1.00, "#ef4444"),  # +15 min and worse → red
+                ],
+                hover_data={"routes_here": True, "pings": True, "avg_delay": True,
                             "lat_grid": False, "lon_grid": False},
+                labels={"avg_delay": "Avg delay (min)", "routes_here": "Routes",
+                        "pings": "Pings"},
             )
             fig_hm.update_layout(
                 mapbox_style="carto-darkmatter",
                 mapbox_center={"lat": 42.129, "lon": -80.085},
-                legend=dict(
-                    title=dict(text="Route", font=dict(color="#e5e7eb")),
-                    yanchor="top", y=1.0,
-                    xanchor="left", x=1.02,
+                coloraxis_colorbar=dict(
+                    title=dict(text="Avg delay (min)", font=dict(color="#e5e7eb")),
+                    tickfont=dict(color="#e5e7eb"),
                     bgcolor="rgba(24, 26, 32, 0.85)",
                     bordercolor="rgba(120, 120, 130, 0.5)",
                     borderwidth=1,
-                    font=dict(size=11, color="#e5e7eb"),
+                    thickness=14,
+                    len=0.7,
                 ),
                 **PLOTLY_LAYOUT,
             )
@@ -1783,6 +1795,15 @@ with tab_daily:
                 key="dl_silver_csv",
             )
 
+    elif selected_day.weekday() == 6:
+        # EMTA does not operate on Sundays — no pings to summarise, so skip
+        # the Claude call entirely and show a clear message instead of a
+        # generic "no data" warning after the API spend.
+        st.info(
+            f"EMTA does not operate on Sundays — no digest for "
+            f"{selected_day.strftime('%A, %B %d, %Y')}."
+        )
+
     else:
         st.warning(f"No digest yet for {selected_day}.")
         if st.button("Generate digest", key="generate_daily"):
@@ -1837,9 +1858,9 @@ with tab_daily:
                 "Headline": r.get("headline_text") or "—",
                 "OTP %":    f"{otp}%" if otp is not None else "—",
             })
-        sel = st.dataframe(
+        sel = st.dataframe(  # pyright: ignore[reportCallIssue, reportArgumentType]
             archive_rows,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             on_select="rerun",
             selection_mode="single-row",
