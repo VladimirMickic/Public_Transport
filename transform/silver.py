@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 import psycopg2
+from psycopg2.extras import execute_values
 
 from ingestion.config import (
     SUPABASE_DB_URL,
@@ -52,6 +53,7 @@ SELECT_BRONZE = """
     WHERE observed_at >= %s
       AND is_on_route = TRUE
       AND adherence_minutes IS NOT NULL
+      AND op_status <> 'LOGGED IN'
     ORDER BY observed_at
 """
 
@@ -61,12 +63,7 @@ INSERT_SILVER = """
         latitude, longitude, speed, adherence_minutes,
         delay_bucket, display_status, is_on_route,
         observed_at, hour_of_day, day_of_week, day_name
-    ) VALUES (
-        %s, %s, %s, %s, %s,
-        %s, %s, %s, %s,
-        %s, %s, %s,
-        %s, %s, %s, %s
-    )
+    ) VALUES %s
 """
 
 DELETE_SILVER_RANGE = """
@@ -121,7 +118,7 @@ def main():
             cur.execute(DELETE_SILVER_RANGE, (cutoff,))
             log.info("Cleared existing silver rows since %s", cutoff.isoformat())
 
-            cur.executemany(INSERT_SILVER, silver_rows)
+            execute_values(cur, INSERT_SILVER, silver_rows, page_size=2000)
             conn.commit()
             log.info("Inserted %d rows into silver_arrivals", len(silver_rows))
 
