@@ -116,3 +116,31 @@ ALTER TABLE ai_daily_insights
 
 ALTER TABLE ai_weekly_insights
     ADD COLUMN IF NOT EXISTS kpi_snapshot JSONB;
+
+
+-- GTFS shapes: the actual road geometry of each route, sourced from
+-- EMTA's published GTFS feed (https://emta.availtec.com/InfoPoint/GTFS-Zip.ashx).
+-- Used by the dashboard's Route Corridor map to draw the route spine as a
+-- line — without this, sparse ping coverage on long routes (16, 105, 261)
+-- leaves the corridor invisible. Refreshed by ingestion/load_gtfs.py.
+CREATE TABLE IF NOT EXISTS gtfs_shapes (
+    shape_id           TEXT     NOT NULL,
+    shape_pt_sequence  INTEGER  NOT NULL,
+    shape_pt_lat       DOUBLE PRECISION NOT NULL,
+    shape_pt_lon       DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (shape_id, shape_pt_sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_gtfs_shapes_id ON gtfs_shapes (shape_id);
+
+-- GTFS trip → route → shape mapping. We join silver_arrivals.route_id
+-- against trips.route_id to find every shape_id the route uses, then
+-- fetch the geometry from gtfs_shapes.
+CREATE TABLE IF NOT EXISTS gtfs_trips (
+    route_id   TEXT NOT NULL,
+    trip_id    TEXT NOT NULL,
+    shape_id   TEXT,
+    direction_id INTEGER,
+    PRIMARY KEY (trip_id)
+);
+CREATE INDEX IF NOT EXISTS idx_gtfs_trips_route ON gtfs_trips (route_id);
+CREATE INDEX IF NOT EXISTS idx_gtfs_trips_shape ON gtfs_trips (shape_id);

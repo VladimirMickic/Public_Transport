@@ -1139,16 +1139,18 @@ with tab_map:
 
         st.caption(
             f"Route corridor for **{picked_label}** ({corridor_caption_date}). "
-            "Each dot is a ~100m segment along the route's actual path. "
-            "Color = adherence bucket (🟢 on time, 🔵 early, 🟠 late, 🔴 very late). "
-            "Size = ping count for context."
+            "Gray line = the route's official path from EMTA's GTFS schedule. "
+            "Dots = where buses were actually observed, colored by adherence "
+            "(🟢 on time, 🔵 early, 🟠 late, 🔴 very late). "
+            "Dot size = number of pings at that spot."
         )
 
-        # Constrain aggregation to one route so the dots trace the
-        # corridor instead of carpeting the whole map. HAVING >= 3
-        # filters out cells with so few pings that one stuck bus could
-        # decide the bucket — keeps the map to stretches with real
-        # repeated signal.
+        # Constrain aggregation to one route. HAVING >= 1 (was >= 3):
+        # with the GTFS route shape drawn underneath as a solid gray
+        # spine, single-ping cells no longer need to be filtered as
+        # noise — the line itself shows the corridor, the dots only
+        # need to show "where we measured and what we saw." Long routes
+        # like 16 / 105 / 261 finally render visibly.
         corridor_sql = f"""
             SELECT
                 ROUND(latitude::numeric, 3)  AS lat_grid,
@@ -1164,12 +1166,30 @@ with tab_map:
               AND adherence_minutes IS NOT NULL
               {direction_filter_sql}
             GROUP BY lat_grid, lon_grid
-            HAVING COUNT(*) >= 3
+            HAVING COUNT(*) >= 1
         """
         corridor = run_query(
             corridor_sql,
             [filter_start, filter_end, picked_route_id] + direction_params,
         )
+
+        # GTFS route geometry — every shape this route uses, ordered for
+        # polyline rendering. Routes have several shape_ids (inbound,
+        # outbound, short-turn variants); all of them are drawn so the
+        # full corridor footprint appears on the map regardless of which
+        # variant ran on the picked date. Cast route_id to text because
+        # gtfs_trips.route_id is text but silver_arrivals.route_id is int.
+        shape_sql = """
+            SELECT s.shape_id, s.shape_pt_sequence,
+                   s.shape_pt_lat, s.shape_pt_lon
+            FROM gtfs_shapes s
+            WHERE s.shape_id IN (
+                SELECT DISTINCT shape_id FROM gtfs_trips
+                WHERE route_id = %s AND shape_id IS NOT NULL
+            )
+            ORDER BY s.shape_id, s.shape_pt_sequence
+        """
+        shape_rows = run_query(shape_sql, [str(picked_route_id)])
 
         if not corridor:
             st.info(f"No corridor data for {picked_label} on {corridor_caption_date}.")
@@ -1229,6 +1249,37 @@ with tab_map:
                 },
             )
             fig_corridor.update_traces(marker=dict(opacity=0.85))
+
+            # Add the GTFS route geometry as a single gray polyline layer
+            # underneath the adherence dots. Each shape_id is rendered as
+            # its own continuous segment by inserting None breaks between
+            # shapes (plotly draws a gap when it hits a None).
+            if shape_rows:
+                import plotly.graph_objects as go
+                lat_seq, lon_seq = [], []
+                current_shape = None
+                for row in shape_rows:
+                    if current_shape is not None and row["shape_id"] != current_shape:
+                        lat_seq.append(None)
+                        lon_seq.append(None)
+                    lat_seq.append(row["shape_pt_lat"])
+                    lon_seq.append(row["shape_pt_lon"])
+                    current_shape = row["shape_id"]
+
+                fig_corridor.add_trace(go.Scattermapbox(
+                    lat=lat_seq,
+                    lon=lon_seq,
+                    mode="lines",
+                    line=dict(color="rgba(160, 170, 185, 0.55)", width=3),
+                    name="Route shape (GTFS)",
+                    hoverinfo="skip",
+                ))
+                # Push the line trace below the dots so adherence colors
+                # stay legible on top.
+                fig_corridor.data = tuple(
+                    [fig_corridor.data[-1]] + list(fig_corridor.data[:-1])
+                )
+
             fig_corridor.update_layout(
                 mapbox_style="carto-darkmatter",
                 mapbox_center={"lat": lat_center, "lon": lon_center},
