@@ -1,0 +1,40 @@
+name: GTFS Weekly Refresh
+
+# Pulls EMTA's public GTFS feed (route shapes + trip-to-route mapping)
+# and reloads gtfs_shapes / gtfs_trips in Supabase. GTFS only changes a
+# few times a year, so weekly cadence keeps the Route Corridor map's
+# road geometry current without burning Actions minutes.
+
+on:
+  schedule:
+    # 07:00 UTC every Monday = 03:00 ET (EDT) / 02:00 ET (EST).
+    # Off-peak so it never collides with the 5-min pipeline run.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:   # also runnable manually from the Actions tab
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  refresh-gtfs:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Refresh GTFS shapes and trips
+      env:
+        SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      run: python3 -m ingestion.load_gtfs
