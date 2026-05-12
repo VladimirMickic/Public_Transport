@@ -1179,7 +1179,11 @@ with tab_map:
         scope_key = (str(picked_route_id), str(filter_start), str(filter_end))
         if st.session_state.get("corridor_bus_scope") != scope_key:
             st.session_state["corridor_bus_scope"] = scope_key
-            st.session_state["corridor_bus_table"] = None  # clear stale selection
+            # Pop instead of setting to None. Streamlit's widget-state
+            # machinery (DataframeState) expects either a properly-shaped
+            # dict or no key at all; a bare None corrupts the next render
+            # of the dataframe and raises TypeError inside arrow.py.
+            st.session_state.pop("corridor_bus_table", None)
 
         selected_bus_id = None
         sel_state = st.session_state.get("corridor_bus_table")
@@ -1275,7 +1279,7 @@ with tab_map:
                     )
                 with banner_cols[1]:
                     if st.button("Show all buses", key="corridor_clear_bus"):
-                        st.session_state["corridor_bus_table"] = None
+                        st.session_state.pop("corridor_bus_table", None)
                         st.rerun()
 
             # Bucket each cell's avg_delay using the same thresholds Silver
