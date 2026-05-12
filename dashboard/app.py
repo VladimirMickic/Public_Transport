@@ -1151,12 +1151,20 @@ with tab_map:
         # noise — the line itself shows the corridor, the dots only
         # need to show "where we measured and what we saw." Long routes
         # like 16 / 105 / 261 finally render visibly.
+        #
+        # distinct_buses + bus_list distinguish "one stuck bus" (1 bus,
+        # weak signal) from "multiple buses all hitting the same snag"
+        # (3 buses, strong recurring bottleneck) — the single most
+        # actionable column for a dispatcher looking at the map.
         corridor_sql = f"""
             SELECT
                 ROUND(latitude::numeric, 3)  AS lat_grid,
                 ROUND(longitude::numeric, 3) AS lon_grid,
                 COUNT(*)                     AS pings,
-                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay
+                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                COUNT(DISTINCT vehicle_id)   AS distinct_buses,
+                STRING_AGG(DISTINCT vehicle_id::text, ', '
+                           ORDER BY vehicle_id::text) AS bus_list
             FROM silver_arrivals
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date
                   BETWEEN %s AND %s
@@ -1236,16 +1244,20 @@ with tab_map:
                     "Very Late": "#ef4444",
                 },
                 hover_data={
-                    "delay_bucket": True,
-                    "avg_delay": ":.1f",
-                    "pings": True,
-                    "lat_grid": False,
-                    "lon_grid": False,
+                    "delay_bucket":   True,
+                    "avg_delay":      ":.1f",
+                    "pings":          True,
+                    "distinct_buses": True,
+                    "bus_list":       True,
+                    "lat_grid":       False,
+                    "lon_grid":       False,
                 },
                 labels={
-                    "delay_bucket": "Adherence",
-                    "avg_delay":    "Avg delay (min)",
-                    "pings":        "Pings",
+                    "delay_bucket":   "Adherence",
+                    "avg_delay":      "Avg delay (min)",
+                    "pings":          "Pings",
+                    "distinct_buses": "Buses (count)",
+                    "bus_list":       "Bus #s",
                 },
             )
             fig_corridor.update_traces(marker=dict(opacity=0.85))
@@ -1317,26 +1329,78 @@ with tab_map:
                     unsafe_allow_html=True,
                 )
 
-            # Worst-segments table — surfaces the top 5 bottleneck cells
-            # numerically so a dispatcher can read "where does Route X
-            # drop time" without squinting at the map.
-            worst_segments = sorted(
-                [r for r in corridor if r["avg_delay"] is not None],
-                key=lambda r: -float(r["avg_delay"]),
-            )[:5]
-            if worst_segments:
-                st.markdown("**Top 5 late stretches**")
-                seg_rows = [
-                    {
-                        "Bucket":          r["delay_bucket"],
-                        "Avg delay (min)": f'{float(r["avg_delay"]):+.1f}',
-                        "Pings":           int(r["pings"]),
-                        "Lat":             f'{float(r["lat_grid"]):.3f}',
-                        "Lon":             f'{float(r["lon_grid"]):.3f}',
-                    }
-                    for r in worst_segments
-                ]
-                st.dataframe(seg_rows, hide_index=True, width="stretch")
+            # Two compact tables side-by-side. Replaces the previous
+            # lat/lon-heavy stretches table because raw coordinates told
+            # the reader nothing actionable. Now: the LEFT table answers
+            # "where on the corridor is this route falling behind, and
+            # is it one bus or many?"; the RIGHT table answers "which
+            # specific buses are on this route, and which one's having
+            # the worst day?"
+            stretch_col, bus_col = st.columns(2)
+
+            with stretch_col:
+                worst_segments = sorted(
+                    [r for r in corridor if r["avg_delay"] is not None],
+                    key=lambda r: -float(r["avg_delay"]),
+                )[:5]
+                if worst_segments:
+                    st.markdown("**🚦 Top 5 late stretches**")
+                    st.caption(
+                        "More buses on the same late stretch = real bottleneck, "
+                        "not one stuck bus."
+                    )
+                    seg_rows = [
+                        {
+                            "Adherence":       r["delay_bucket"],
+                            "Avg delay (min)": f'{float(r["avg_delay"]):+.1f}',
+                            "Pings":           int(r["pings"]),
+                            "Buses":           int(r["distinct_buses"]),
+                            "Bus #s":          r.get("bus_list") or "—",
+                        }
+                        for r in worst_segments
+                    ]
+                    st.dataframe(seg_rows, hide_index=True, width="stretch")
+
+            with bus_col:
+                # Per-bus stats for the selected route — tells the user how
+                # many distinct buses ran this route in the window, and
+                # which one had the worst average. Vehicle ID matches the
+                # number painted on the bus.
+                bus_sql = f"""
+                    SELECT vehicle_id,
+                           COUNT(*) AS pings,
+                           COUNT(DISTINCT trip_id) AS trips,
+                           ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                           MAX(adherence_minutes) AS worst_late
+                    FROM silver_arrivals
+                    WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                          BETWEEN %s AND %s
+                      AND route_id = %s
+                      AND adherence_minutes IS NOT NULL
+                      {direction_filter_sql}
+                    GROUP BY vehicle_id
+                    ORDER BY avg_delay DESC NULLS LAST
+                """
+                bus_rows = run_query(
+                    bus_sql,
+                    [filter_start, filter_end, picked_route_id] + direction_params,
+                )
+                if bus_rows:
+                    st.markdown(f"**🚌 Buses on this route ({len(bus_rows)})**")
+                    st.caption(
+                        "Sorted by avg delay — the bus at the top had the worst day."
+                    )
+                    bus_table = [
+                        {
+                            "Bus #":           int(b["vehicle_id"]),
+                            "Pings":           int(b["pings"]),
+                            "Trips":           int(b["trips"]),
+                            "Avg delay (min)": f'{float(b["avg_delay"]):+.1f}',
+                            "Worst late (min)": f'{int(b["worst_late"]):+d}',
+                        }
+                        for b in bus_rows
+                    ]
+                    st.dataframe(bus_table, hide_index=True, width="stretch")
 
 
 # ══════════════════════════════════════════════════════════
