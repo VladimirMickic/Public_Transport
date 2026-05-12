@@ -84,21 +84,36 @@ def parse_trips(zf: zipfile.ZipFile) -> list[tuple]:
     return rows
 
 
+def parse_stops(zf: zipfile.ZipFile) -> list[tuple]:
+    with zf.open("stops.txt") as f:
+        reader = csv.DictReader(io.TextIOWrapper(f, encoding="utf-8"))
+        rows = []
+        for r in reader:
+            try:
+                rows.append((
+                    r["stop_id"],
+                    r.get("stop_name") or None,
+                    float(r["stop_lat"]),
+                    float(r["stop_lon"]),
+                ))
+            except (KeyError, ValueError, TypeError):
+                continue
+    log.info("Parsed %d stops", len(rows))
+    return rows
+
+
 def main():
     zf = fetch_gtfs_zip()
     shapes = parse_shapes(zf)
     trips = parse_trips(zf)
+    stops = parse_stops(zf)
 
-    # Supabase's transaction pooler (port 6543) imposes a tight default
-    # statement_timeout. TRUNCATE on tables this size is fast, but the
-    # large bulk insert that follows will overrun it, so bump the session
-    # timeout for our work. execute_values batches thousands of rows per
-    # round trip, which is ~100x faster than executemany for bulk loads
-    # and keeps the whole job well inside the extended window.
     # Supabase enforces a session statement_timeout on the pooler. Plain
     # SET (no LOCAL) persists across statements within this connection.
     # autocommit lets DELETE / SET behave like one-shot calls so a slow
-    # bulk insert can't roll back the table clear.
+    # bulk insert can't roll back the table clear. execute_values batches
+    # thousands of rows per round trip — ~100x faster than executemany
+    # for bulk loads.
     conn = psycopg2.connect(SUPABASE_DB_URL)
     conn.autocommit = True
     try:
@@ -106,6 +121,7 @@ def main():
             cur.execute("SET statement_timeout = '120000'")
             cur.execute("DELETE FROM gtfs_shapes")
             cur.execute("DELETE FROM gtfs_trips")
+            cur.execute("DELETE FROM gtfs_stops")
             execute_values(
                 cur,
                 "INSERT INTO gtfs_shapes (shape_id, shape_pt_sequence, "
@@ -120,7 +136,15 @@ def main():
                 trips,
                 page_size=2000,
             )
-        log.info("Loaded %d shape points and %d trips", len(shapes), len(trips))
+            execute_values(
+                cur,
+                "INSERT INTO gtfs_stops (stop_id, stop_name, stop_lat, "
+                "stop_lon) VALUES %s",
+                stops,
+                page_size=2000,
+            )
+        log.info("Loaded %d shape points, %d trips, %d stops",
+                 len(shapes), len(trips), len(stops))
     except Exception:
         log.exception("Failed to load GTFS")
         raise

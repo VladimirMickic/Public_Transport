@@ -144,3 +144,15 @@ CREATE TABLE IF NOT EXISTS gtfs_trips (
 );
 CREATE INDEX IF NOT EXISTS idx_gtfs_trips_route ON gtfs_trips (route_id);
 CREATE INDEX IF NOT EXISTS idx_gtfs_trips_shape ON gtfs_trips (shape_id);
+
+-- GTFS stops. Used by the Route Corridor map to label each grid cell
+-- and each "worst stretch" row with the nearest physical stop name
+-- ("W 12th St at Selinger Ave") instead of raw lat/lon.
+CREATE TABLE IF NOT EXISTS gtfs_stops (
+    stop_id   TEXT PRIMARY KEY,
+    stop_name TEXT,
+    stop_lat  DOUBLE PRECISION,
+    stop_lon  DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_gtfs_stops_latlon
+    ON gtfs_stops (stop_lat, stop_lon);

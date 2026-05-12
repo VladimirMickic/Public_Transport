@@ -1145,40 +1145,102 @@ with tab_map:
             "Dot size = number of pings at that spot."
         )
 
-        # Constrain aggregation to one route. HAVING >= 1 (was >= 3):
-        # with the GTFS route shape drawn underneath as a solid gray
-        # spine, single-ping cells no longer need to be filtered as
-        # noise — the line itself shows the corridor, the dots only
-        # need to show "where we measured and what we saw." Long routes
-        # like 16 / 105 / 261 finally render visibly.
-        #
-        # distinct_buses + bus_list distinguish "one stuck bus" (1 bus,
-        # weak signal) from "multiple buses all hitting the same snag"
-        # (3 buses, strong recurring bottleneck) — the single most
-        # actionable column for a dispatcher looking at the map.
-        corridor_sql = f"""
-            SELECT
-                ROUND(latitude::numeric, 3)  AS lat_grid,
-                ROUND(longitude::numeric, 3) AS lon_grid,
-                COUNT(*)                     AS pings,
-                ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
-                COUNT(DISTINCT vehicle_id)   AS distinct_buses,
-                STRING_AGG(DISTINCT vehicle_id::text, ', '
-                           ORDER BY vehicle_id::text) AS bus_list
+        # Per-bus stats for the route. Queried BEFORE the corridor
+        # because the bus-selection state (set by clicking a row in the
+        # table below) needs to be resolved to a vehicle_id here so it
+        # can flow into the corridor query as a filter.
+        bus_sql = f"""
+            SELECT vehicle_id,
+                   COUNT(*) AS pings,
+                   COUNT(DISTINCT trip_id) AS trips,
+                   ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                   MAX(adherence_minutes) AS worst_late
             FROM silver_arrivals
             WHERE (observed_at AT TIME ZONE 'America/New_York')::date
                   BETWEEN %s AND %s
               AND route_id = %s
-              AND latitude IS NOT NULL
-              AND longitude IS NOT NULL
               AND adherence_minutes IS NOT NULL
               {direction_filter_sql}
-            GROUP BY lat_grid, lon_grid
-            HAVING COUNT(*) >= 1
+            GROUP BY vehicle_id
+            ORDER BY avg_delay DESC NULLS LAST
+        """
+        bus_rows = run_query(
+            bus_sql,
+            [filter_start, filter_end, picked_route_id] + direction_params,
+        )
+
+        # Resolve any prior bus-table selection into a vehicle_id to
+        # filter the map with. Selection state lives in
+        # st.session_state["corridor_bus_table"]; the row index is
+        # looked up against the current bus_rows ordering. If route or
+        # date changed since the selection was made (different bus_rows)
+        # we drop the selection rather than misapply it to a different
+        # bus.
+        scope_key = (str(picked_route_id), str(filter_start), str(filter_end))
+        if st.session_state.get("corridor_bus_scope") != scope_key:
+            st.session_state["corridor_bus_scope"] = scope_key
+            st.session_state["corridor_bus_table"] = None  # clear stale selection
+
+        selected_bus_id = None
+        sel_state = st.session_state.get("corridor_bus_table")
+        if sel_state is not None and hasattr(sel_state, "selection"):
+            sel_idx = (sel_state.selection.rows or [None])[0]
+            if sel_idx is not None and 0 <= sel_idx < len(bus_rows):
+                selected_bus_id = bus_rows[sel_idx]["vehicle_id"]
+
+        # Constrain aggregation to one route. HAVING >= 1: with the GTFS
+        # route shape drawn underneath as a solid gray spine, single-ping
+        # cells no longer need to be filtered as noise — the line itself
+        # shows the corridor.
+        #
+        # distinct_buses + bus_list distinguish "one stuck bus" (weak
+        # signal) from "multiple buses all hitting the same snag"
+        # (recurring bottleneck) — the single most actionable column.
+        #
+        # The LATERAL join to gtfs_stops attaches the nearest physical
+        # stop name to every cell, so hovers and the worst-stretches
+        # table can say "Intermodal Transit Center" instead of raw lat/lon.
+        # Plain Euclidean on lat/lon is fine here — Erie spans <0.2°, so
+        # the great-circle distortion is well below the ~100m cell width.
+        bus_filter_sql = "AND vehicle_id = %s" if selected_bus_id else ""
+        bus_filter_params = [selected_bus_id] if selected_bus_id else []
+        corridor_sql = f"""
+            WITH cells AS (
+                SELECT
+                    ROUND(latitude::numeric, 3)  AS lat_grid,
+                    ROUND(longitude::numeric, 3) AS lon_grid,
+                    COUNT(*)                     AS pings,
+                    ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
+                    COUNT(DISTINCT vehicle_id)   AS distinct_buses,
+                    STRING_AGG(DISTINCT vehicle_id::text, ', '
+                               ORDER BY vehicle_id::text) AS bus_list
+                FROM silver_arrivals
+                WHERE (observed_at AT TIME ZONE 'America/New_York')::date
+                      BETWEEN %s AND %s
+                  AND route_id = %s
+                  AND latitude IS NOT NULL
+                  AND longitude IS NOT NULL
+                  AND adherence_minutes IS NOT NULL
+                  {bus_filter_sql}
+                  {direction_filter_sql}
+                GROUP BY lat_grid, lon_grid
+                HAVING COUNT(*) >= 1
+            )
+            SELECT c.*, ns.stop_name AS near_stop
+            FROM cells c
+            LEFT JOIN LATERAL (
+                SELECT stop_name
+                FROM gtfs_stops
+                ORDER BY (stop_lat - c.lat_grid) * (stop_lat - c.lat_grid)
+                       + (stop_lon - c.lon_grid) * (stop_lon - c.lon_grid)
+                LIMIT 1
+            ) ns ON TRUE
         """
         corridor = run_query(
             corridor_sql,
-            [filter_start, filter_end, picked_route_id] + direction_params,
+            [filter_start, filter_end, picked_route_id]
+            + bus_filter_params
+            + direction_params,
         )
 
         # GTFS route geometry — every shape this route uses, ordered for
@@ -1202,6 +1264,20 @@ with tab_map:
         if not corridor:
             st.info(f"No corridor data for {picked_label} on {corridor_caption_date}.")
         else:
+            # Filter banner — appears above the map when a single bus is
+            # selected, with a one-click clear back to the full route view.
+            if selected_bus_id is not None:
+                banner_cols = st.columns([6, 1])
+                with banner_cols[0]:
+                    st.info(
+                        f"🚌 Filtered to **Bus #{selected_bus_id}** only. "
+                        "Map and stretches table reflect just this vehicle."
+                    )
+                with banner_cols[1]:
+                    if st.button("Show all buses", key="corridor_clear_bus"):
+                        st.session_state["corridor_bus_table"] = None
+                        st.rerun()
+
             # Bucket each cell's avg_delay using the same thresholds Silver
             # applies per ping (see ingestion/config.py). Discrete buckets
             # are far easier to read than the previous continuous gradient
@@ -1244,6 +1320,7 @@ with tab_map:
                     "Very Late": "#ef4444",
                 },
                 hover_data={
+                    "near_stop":      True,
                     "delay_bucket":   True,
                     "avg_delay":      ":.1f",
                     "pings":          True,
@@ -1253,6 +1330,7 @@ with tab_map:
                     "lon_grid":       False,
                 },
                 labels={
+                    "near_stop":      "Near stop",
                     "delay_bucket":   "Adherence",
                     "avg_delay":      "Avg delay (min)",
                     "pings":          "Pings",
@@ -1329,13 +1407,13 @@ with tab_map:
                     unsafe_allow_html=True,
                 )
 
-            # Two compact tables side-by-side. Replaces the previous
-            # lat/lon-heavy stretches table because raw coordinates told
-            # the reader nothing actionable. Now: the LEFT table answers
+            # Two compact tables side-by-side. The LEFT table answers
             # "where on the corridor is this route falling behind, and
-            # is it one bus or many?"; the RIGHT table answers "which
-            # specific buses are on this route, and which one's having
-            # the worst day?"
+            # is it one bus or many?" — now with a Near-stop column so
+            # the row reads "Intermodal Transit Center" instead of raw
+            # lat/lon. The RIGHT table answers "which specific buses are
+            # on this route?" and is selectable: clicking a row reruns
+            # the page with the map filtered to that single vehicle.
             stretch_col, bus_col = st.columns(2)
 
             with stretch_col:
@@ -1351,6 +1429,7 @@ with tab_map:
                     )
                     seg_rows = [
                         {
+                            "Near stop":       r.get("near_stop") or "—",
                             "Adherence":       r["delay_bucket"],
                             "Avg delay (min)": f'{float(r["avg_delay"]):+.1f}',
                             "Pings":           int(r["pings"]),
@@ -1362,33 +1441,16 @@ with tab_map:
                     st.dataframe(seg_rows, hide_index=True, width="stretch")
 
             with bus_col:
-                # Per-bus stats for the selected route — tells the user how
-                # many distinct buses ran this route in the window, and
-                # which one had the worst average. Vehicle ID matches the
-                # number painted on the bus.
-                bus_sql = f"""
-                    SELECT vehicle_id,
-                           COUNT(*) AS pings,
-                           COUNT(DISTINCT trip_id) AS trips,
-                           ROUND(AVG(adherence_minutes)::numeric, 1) AS avg_delay,
-                           MAX(adherence_minutes) AS worst_late
-                    FROM silver_arrivals
-                    WHERE (observed_at AT TIME ZONE 'America/New_York')::date
-                          BETWEEN %s AND %s
-                      AND route_id = %s
-                      AND adherence_minutes IS NOT NULL
-                      {direction_filter_sql}
-                    GROUP BY vehicle_id
-                    ORDER BY avg_delay DESC NULLS LAST
-                """
-                bus_rows = run_query(
-                    bus_sql,
-                    [filter_start, filter_end, picked_route_id] + direction_params,
-                )
+                # bus_rows already queried above so the selection-state
+                # plumbing could resolve a row index → vehicle_id before
+                # the map rendered. Here we just render the table with
+                # on_select="rerun" — clicking a row triggers a rerun,
+                # which the corridor section picks up next pass.
                 if bus_rows:
                     st.markdown(f"**🚌 Buses on this route ({len(bus_rows)})**")
                     st.caption(
-                        "Sorted by avg delay — the bus at the top had the worst day."
+                        "Click a row to filter the map to that bus only. "
+                        "Sorted by avg delay; top row had the worst day."
                     )
                     bus_table = [
                         {
@@ -1400,7 +1462,14 @@ with tab_map:
                         }
                         for b in bus_rows
                     ]
-                    st.dataframe(bus_table, hide_index=True, width="stretch")
+                    st.dataframe(
+                        bus_table,
+                        hide_index=True,
+                        width="stretch",
+                        on_select="rerun",        # pyright: ignore[reportCallIssue]
+                        selection_mode="single-row",  # pyright: ignore[reportCallIssue]
+                        key="corridor_bus_table",     # pyright: ignore[reportCallIssue]
+                    )
 
 
 # ══════════════════════════════════════════════════════════
